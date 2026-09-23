@@ -8,11 +8,12 @@ import json
 import re
 import unicodedata
 from datetime import date, datetime, timezone
-from typing import Annotated, Any, Generic, Optional, TypeVar
+from typing import Annotated, Any, Generic, Literal, Optional, TypeVar
 from uuid import UUID
 
 from email_validator import EmailNotValidError, validate_email
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -284,6 +285,64 @@ class UpdatePatientArgs(PatientUpdate):
     patient_id: UUID
 
 
+def _parse_appointment_day(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    parsed = parse_date(value)
+    if parsed is None:
+        raise ValueError("Day must be a valid date, like 2026-09-29")
+    return parsed
+
+
+def _parse_part_of_day(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    words = {"morning": "morning", "mañana": "morning", "afternoon": "afternoon", "tarde": "afternoon"}
+    part = words.get(value.strip().lower())
+    if part is None:
+        raise ValueError('Part of day must be "morning" or "afternoon"')
+    return part
+
+
+class SlotQuery(BaseModel):
+    """Filters for free appointment slots. Both are optional."""
+
+    day: _optional(Annotated[date, BeforeValidator(_parse_appointment_day)]) = None
+    part_of_day: _optional(
+        Annotated[Literal["morning", "afternoon"], BeforeValidator(_parse_part_of_day)]
+    ) = None
+
+
+class BookAppointment(BaseModel):
+    patient_id: UUID
+    starts_at: AwareDatetime  # as returned by the slot search, with its UTC offset
+
+
+class SlotOut(BaseModel):
+    starts_at: datetime
+    label: str  # how the agent says it, in the practice's timezone
+
+
+class AppointmentOut(BaseModel):
+    appointment_id: UUID
+    patient_id: UUID
+    starts_at: datetime
+    label: str
+    created_at: datetime
+
+
+class CallOut(BaseModel):
+    call_id: str
+    patient_id: UUID | None
+    patient_name: str | None
+    caller_number: str | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    ended_reason: str | None
+    summary: str | None
+    transcript: str | None
+
+
 class ErrorDetail(BaseModel):
     message: str
     field: str | None = None
@@ -334,9 +393,25 @@ class VapiToolCall(BaseModel):
         }
 
 
+class VapiCustomer(BaseModel):
+    number: str | None = None
+
+
+class VapiCall(BaseModel):
+    """The phone call a message belongs to. Only the fields this API uses."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    id: str
+    customer: VapiCustomer | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+
+
 class VapiMessage(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
+    call: VapiCall | None = None  # links a save to the phone call it happened in
     # Absent on non-tool messages (status updates etc.), which get an empty reply.
     tool_call_list: list[VapiToolCall] = []
 
@@ -355,3 +430,35 @@ class VapiToolResult(BaseModel):
 
 class VapiToolResponse(BaseModel):
     results: list[VapiToolResult]
+
+
+class VapiArtifact(BaseModel):
+    transcript: str | None = None
+
+
+class VapiAnalysis(BaseModel):
+    summary: str | None = None
+
+
+class VapiEventMessage(BaseModel):
+    """An assistant-level server message. Only end-of-call reports are stored.
+
+    Transcript and summary are read from `artifact` and `analysis`, falling back to the
+    top-level fields older payloads used.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    type: str
+    call: VapiCall | None = None
+    ended_reason: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    artifact: VapiArtifact | None = None
+    analysis: VapiAnalysis | None = None
+    transcript: str | None = None
+    summary: str | None = None
+
+
+class VapiEvent(BaseModel):
+    message: VapiEventMessage

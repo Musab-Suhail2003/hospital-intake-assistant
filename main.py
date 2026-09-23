@@ -1,9 +1,11 @@
+import json
 import logging
 import os
 import secrets
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -12,14 +14,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dashboard import render_dashboard
 from db import create_tables, get_db
-from models import Patient
+from models import Appointment, Call, Patient
+from scheduling import is_bookable, open_slots, spoken
 from schemas import (
+    AppointmentOut,
+    BookAppointment,
+    CallOut,
     Envelope,
     ErrorDetail,
     FindPatientArgs,
@@ -28,7 +34,10 @@ from schemas import (
     PatientMatch,
     PatientOut,
     PatientUpdate,
+    SlotOut,
+    SlotQuery,
     UpdatePatientArgs,
+    VapiEvent,
     VapiToolCall,
     VapiToolRequest,
     VapiToolResponse,
@@ -216,10 +225,17 @@ def dashboard(request: Request, db: DbSession):
         return HTMLResponse(render_dashboard([], raw, error=message), status_code=422)
     try:
         patients = query_patients(db, filters)
+        upcoming = db.scalars(
+            select(Appointment).where(Appointment.starts_at > func.now()).order_by(Appointment.starts_at)
+        ).all()
+        calls = query_calls(db, limit=20)
     except SQLAlchemyError:
         logger.exception("Database error on GET /dashboard")
         return HTMLResponse(render_dashboard([], raw, error=DATABASE_ERROR_MESSAGE), status_code=500)
-    return HTMLResponse(render_dashboard(patients, raw))
+    next_appointment: dict[UUID, str] = {}
+    for appointment in upcoming:
+        next_appointment.setdefault(appointment.patient_id, spoken(appointment.starts_at))
+    return HTMLResponse(render_dashboard(patients, raw, appointments=next_appointment, calls=calls))
 
 
 @app.get("/patients/{patient_id}", response_model=Envelope[PatientOut])
@@ -318,15 +334,35 @@ ToolHandler = Callable[[Session, dict], Envelope]
 def answer_tool_calls(
     body: VapiToolRequest, db: Session, tool_name: str, handler: ToolHandler
 ) -> VapiToolResponse:
-    results = [
-        VapiToolResult(
-            name=call.name,
-            tool_call_id=call.id,
-            result=run_tool_call(db, call, tool_name, handler).model_dump_json(),
+    phone_call = body.message.call
+    results = []
+    for tool_call in body.message.tool_call_list:
+        envelope = run_tool_call(db, tool_call, tool_name, handler)
+        patient_id = getattr(envelope.data, "patient_id", None)
+        if phone_call is not None and patient_id is not None:
+            link_call(db, phone_call.id, patient_id)
+        results.append(
+            VapiToolResult(
+                name=tool_call.name, tool_call_id=tool_call.id, result=envelope.model_dump_json()
+            )
         )
-        for call in body.message.tool_call_list
-    ]
     return VapiToolResponse(results=results)
+
+
+def link_call(db: Session, call_id: str, patient_id: UUID) -> None:
+    """Record which patient a phone call saved, updated or booked for.
+
+    The end-of-call report fills in the rest of the row later. A failure here is logged
+    and swallowed: the save itself succeeded, and the caller shouldn't hear an error.
+    """
+    try:
+        call = db.get(Call, call_id) or Call(call_id=call_id)
+        call.patient_id = patient_id
+        db.add(call)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Could not link call %s to patient %s", call_id, patient_id)
 
 
 def run_tool_call(db: Session, call: VapiToolCall, tool_name: str, handler: ToolHandler) -> Envelope:
@@ -406,3 +442,179 @@ def handle_update_patient(db: Session, arguments: dict) -> Envelope[PatientOut]:
         return Envelope(error=ErrorDetail(message="Patient not found", field="patient_id"))
     changes = args.model_dump(exclude_unset=True, exclude={"patient_id"})
     return Envelope(data=apply_update(db, patient, changes))
+
+
+@app.post(
+    "/tools/find_appointment_slots",
+    response_model=VapiToolResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def find_appointment_slots_tool(body: VapiToolRequest, db: DbSession):
+    """Offer the caller free first-appointment times."""
+    return answer_tool_calls(body, db, "find_appointment_slots", handle_find_slots)
+
+
+def handle_find_slots(db: Session, arguments: dict) -> Envelope[list[SlotOut]]:
+    return Envelope(data=find_slots(db, SlotQuery.model_validate(arguments)))
+
+
+@app.post(
+    "/tools/book_appointment",
+    response_model=VapiToolResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def book_appointment_tool(body: VapiToolRequest, db: DbSession):
+    """Book the time the caller chose."""
+    return answer_tool_calls(body, db, "book_appointment", handle_book_appointment)
+
+
+def handle_book_appointment(db: Session, arguments: dict) -> Envelope[AppointmentOut]:
+    _, envelope = book_appointment(db, BookAppointment.model_validate(arguments))
+    return envelope
+
+
+# --- Appointments (mock scheduling; slots come from scheduling.py) ---
+
+def appointment_out(appointment: Appointment) -> AppointmentOut:
+    return AppointmentOut(
+        appointment_id=appointment.appointment_id,
+        patient_id=appointment.patient_id,
+        starts_at=appointment.starts_at,
+        label=spoken(appointment.starts_at),
+        created_at=appointment.created_at,
+    )
+
+
+def find_slots(db: Session, query: SlotQuery) -> list[SlotOut]:
+    booked = {t.astimezone(timezone.utc) for t in db.scalars(select(Appointment.starts_at))}
+    slots = open_slots(booked, day=query.day, part_of_day=query.part_of_day)
+    return [SlotOut(starts_at=slot, label=spoken(slot)) for slot in slots]
+
+
+def book_appointment(db: Session, args: BookAppointment) -> tuple[int, Envelope[AppointmentOut]]:
+    """Book one slot. Returns the HTTP status for the REST route alongside the envelope."""
+    patient = db.scalar(active_patients().where(Patient.patient_id == args.patient_id))
+    if patient is None:
+        return status.HTTP_404_NOT_FOUND, Envelope(
+            error=ErrorDetail(message="Patient not found", field="patient_id")
+        )
+    if not is_bookable(args.starts_at):
+        return status.HTTP_422_UNPROCESSABLE_CONTENT, Envelope(error=ErrorDetail(
+            message="That time isn't available. Please choose one of the offered times.",
+            field="starts_at",
+        ))
+    existing = db.scalar(
+        select(Appointment).where(
+            Appointment.patient_id == args.patient_id, Appointment.starts_at > func.now()
+        )
+    )
+    if existing is not None:
+        return status.HTTP_409_CONFLICT, Envelope(error=ErrorDetail(
+            message=f"{patient.first_name} already has an appointment on {spoken(existing.starts_at)}.",
+        ))
+
+    appointment = Appointment(patient_id=args.patient_id, starts_at=args.starts_at)
+    db.add(appointment)
+    try:
+        db.commit()
+    except IntegrityError:  # the unique starts_at: someone booked this time first
+        db.rollback()
+        return status.HTTP_409_CONFLICT, Envelope(error=ErrorDetail(
+            message="That time has just been taken. Please choose another.", field="starts_at"
+        ))
+    db.refresh(appointment)
+    out = appointment_out(appointment)
+    logger.info("Appointment booked: %s", out.model_dump_json())
+    return status.HTTP_201_CREATED, Envelope(data=out)
+
+
+@app.get("/appointments/slots", response_model=Envelope[list[SlotOut]])
+def list_slots(query: Annotated[SlotQuery, Query()], db: DbSession):
+    """The earliest free slots, optionally on one day (`day`) and `part_of_day`."""
+    return Envelope(data=find_slots(db, query))
+
+
+@app.get("/appointments", response_model=Envelope[list[AppointmentOut]])
+def list_appointments(db: DbSession, patient_id: UUID | None = None):
+    query = select(Appointment).order_by(Appointment.starts_at)
+    if patient_id is not None:
+        query = query.where(Appointment.patient_id == patient_id)
+    return Envelope(data=[appointment_out(a) for a in db.scalars(query)])
+
+
+@app.post(
+    "/appointments",
+    status_code=status.HTTP_201_CREATED,
+    response_model=Envelope[AppointmentOut],
+    dependencies=[Depends(require_api_key)],
+)
+def create_appointment(payload: BookAppointment, db: DbSession):
+    status_code, envelope = book_appointment(db, payload)
+    if envelope.error is not None:
+        return error_response(status_code, envelope.error.message, envelope.error.field)
+    return envelope
+
+
+# --- Calls: transcripts and summaries from Vapi's end-of-call reports ---
+
+def query_calls(db: Session, patient_id: UUID | None = None, limit: int | None = None) -> list[CallOut]:
+    query = (
+        select(Call, Patient)
+        .outerjoin(Patient, Call.patient_id == Patient.patient_id)
+        .order_by(Call.created_at.desc())
+    )
+    if patient_id is not None:
+        query = query.where(Call.patient_id == patient_id)
+    if limit is not None:
+        query = query.limit(limit)
+    return [
+        CallOut(
+            call_id=call.call_id,
+            patient_id=call.patient_id,
+            patient_name=f"{patient.first_name} {patient.last_name}" if patient else None,
+            caller_number=call.caller_number,
+            started_at=call.started_at,
+            ended_at=call.ended_at,
+            ended_reason=call.ended_reason,
+            summary=call.summary,
+            transcript=call.transcript,
+        )
+        for call, patient in db.execute(query)
+    ]
+
+
+@app.get("/calls", response_model=Envelope[list[CallOut]])
+def list_calls(db: DbSession, patient_id: UUID | None = None):
+    """Recorded calls, newest first. Calls with no patient ended before anything was saved."""
+    return Envelope(data=query_calls(db, patient_id))
+
+
+@app.post(
+    "/vapi/events",
+    response_model=Envelope[dict],
+    dependencies=[Depends(require_api_key)],
+)
+def vapi_events(body: VapiEvent, db: DbSession):
+    """Assistant-level Vapi webhook. Stores each end-of-call report; other messages are ignored."""
+    message = body.message
+    if message.type != "end-of-call-report" or message.call is None:
+        return Envelope(data={"stored": False})
+
+    call = db.get(Call, message.call.id) or Call(call_id=message.call.id)
+    call.caller_number = message.call.customer.number if message.call.customer else None
+    call.started_at = message.started_at or message.call.started_at
+    call.ended_at = message.ended_at or message.call.ended_at
+    call.ended_reason = message.ended_reason
+    call.transcript = (message.artifact and message.artifact.transcript) or message.transcript
+    call.summary = (message.analysis and message.analysis.summary) or message.summary
+    db.add(call)
+    db.commit()
+    # The brief asks for agent conversations to be logged: the whole call, as one line.
+    logger.info("Call ended: %s", json.dumps({
+        "call_id": call.call_id,
+        "patient_id": str(call.patient_id) if call.patient_id else None,
+        "ended_reason": call.ended_reason,
+        "summary": call.summary,
+        "transcript": call.transcript,
+    }))
+    return Envelope(data={"stored": True})

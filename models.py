@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Enum, String, func
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -58,3 +58,44 @@ class Patient(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Call(Base):
+    """One phone call, filled in from Vapi's end-of-call report.
+
+    Linked to the patient saved or updated during the call. A call that ends before
+    anything is saved (a dropped call, a hang-up) is still recorded, with no patient.
+    """
+
+    __tablename__ = "calls"
+
+    call_id: Mapped[str] = mapped_column(String(64), primary_key=True)  # Vapi's call ID
+    patient_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("patients.patient_id"), index=True
+    )
+    caller_number: Mapped[str | None] = mapped_column(String(32))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_reason: Mapped[str | None] = mapped_column(String(100))
+    summary: Mapped[str | None] = mapped_column(Text)
+    transcript: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Appointment(Base):
+    """A booked first appointment. The slots themselves are mock data (scheduling.py)."""
+
+    __tablename__ = "appointments"
+
+    appointment_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    patient_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("patients.patient_id"), index=True)
+    # One mock provider, so a time can only be booked once; the database enforces it.
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

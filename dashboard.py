@@ -7,14 +7,17 @@ the address and reason for visit come from callers.
 from datetime import timezone
 from html import escape
 
-from schemas import PatientOut
+from uuid import UUID
+
+from schemas import CallOut, PatientOut
 
 REFRESH_SECONDS = 30
 
 _COLUMNS = (
     "Patient", "Date of birth", "Sex", "Phone", "Email", "Address", "Reason for visit",
-    "Insurance", "Emergency contact", "Language", "Registered (UTC)",
+    "Insurance", "Emergency contact", "Language", "Next appointment", "Registered (UTC)",
 )
+_CALL_COLUMNS = ("Ended (UTC)", "Caller", "Patient", "Outcome", "Summary", "Transcript")
 
 _STYLE = """
 :root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66;
@@ -45,6 +48,10 @@ td:empty::after { content: "\\2014"; color: var(--muted); }
 .nowrap { white-space: nowrap; }
 .wide { min-width: 170px; }
 .empty { padding: 32px; text-align: center; color: var(--muted); }
+h2 { font-size: 17px; max-width: 1400px; margin: 32px auto 8px; }
+details summary { cursor: pointer; color: var(--accent); }
+pre { white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 8px 0 0; max-height: 320px; overflow-y: auto; }
 """
 
 
@@ -60,7 +67,7 @@ def _joined(*parts: str | None) -> str:
     return " · ".join(part for part in parts if part)
 
 
-def _row(p: PatientOut) -> str:
+def _row(p: PatientOut, appointment: str | None) -> str:
     address = ", ".join(part for part in (p.address_line_1, p.address_line_2, p.city) if part)
     member_id = f"ID {p.insurance_member_id}" if p.insurance_member_id else None
     cells = (
@@ -74,6 +81,7 @@ def _row(p: PatientOut) -> str:
         f"<td>{_text(_joined(p.insurance_provider, member_id))}</td>",
         f"<td>{_text(_joined(p.emergency_contact_name, _phone(p.emergency_contact_phone)))}</td>",
         f"<td>{_text(p.preferred_language)}</td>",
+        f'<td class="nowrap">{_text(appointment)}</td>',
         f'<td class="nowrap">{p.created_at.astimezone(timezone.utc):%Y-%m-%d %H:%M}</td>',
     )
     return "<tr>" + "".join(cells) + "</tr>"
@@ -86,12 +94,52 @@ def _filter_input(label: str, name: str, filters: dict[str, str], placeholder: s
     )
 
 
+def _call_row(c: CallOut) -> str:
+    ended = c.ended_at or c.started_at
+    transcript = (
+        f"<details><summary>Show</summary><pre>{_text(c.transcript)}</pre></details>"
+        if c.transcript else ""
+    )
+    cells = (
+        f'<td class="nowrap">{f"{ended.astimezone(timezone.utc):%Y-%m-%d %H:%M}" if ended else ""}</td>',
+        f'<td class="nowrap">{_text(c.caller_number)}</td>',
+        f'<td class="nowrap">{_text(c.patient_name)}</td>',
+        f"<td>{_text(c.ended_reason.replace('-', ' ') if c.ended_reason else None)}</td>",
+        f'<td class="wide">{_text(c.summary)}</td>',
+        f'<td class="wide">{transcript}</td>',
+    )
+    return "<tr>" + "".join(cells) + "</tr>"
+
+
+def _calls_section(calls: list[CallOut]) -> str:
+    if calls:
+        rows = "".join(_call_row(c) for c in calls)
+    else:
+        rows = f'<tr><td class="empty" colspan="{len(_CALL_COLUMNS)}">No calls recorded yet.</td></tr>'
+    headings = "".join(f"<th>{column}</th>" for column in _CALL_COLUMNS)
+    return f"""<h2>Recent calls</h2>
+<div class="table-wrap">
+<table>
+<thead><tr>{headings}</tr></thead>
+<tbody>{rows}</tbody>
+</table>
+</div>"""
+
+
 def render_dashboard(
-    patients: list[PatientOut], filters: dict[str, str], error: str | None = None
+    patients: list[PatientOut],
+    filters: dict[str, str],
+    error: str | None = None,
+    appointments: dict[UUID, str] | None = None,
+    calls: list[CallOut] | None = None,
 ) -> str:
-    """The full page. `filters` holds the raw query values, echoed back into the form."""
+    """The full page. `filters` holds the raw query values, echoed back into the form.
+
+    `appointments` maps a patient to their next appointment, already worded for display.
+    """
+    appointments = appointments or {}
     if patients:
-        rows = "".join(_row(p) for p in patients)
+        rows = "".join(_row(p, appointments.get(p.patient_id)) for p in patients)
     else:
         message = "No patients match these filters." if filters else "No patients registered yet."
         rows = f'<tr><td class="empty" colspan="{len(_COLUMNS)}">{message}</td></tr>'
@@ -128,6 +176,7 @@ def render_dashboard(
 <tbody>{rows}</tbody>
 </table>
 </div>
+{_calls_section(calls or [])}
 </body>
 </html>
 """

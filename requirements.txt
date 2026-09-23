@@ -5,3 +5,4 @@ psycopg2-binary==2.9.13
 pydantic==2.13.5
 email-validator==2.3.0
 python-dotenv==1.2.3
+tzdata==2026.4
