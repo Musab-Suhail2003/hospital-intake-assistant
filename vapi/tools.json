@@ -1,0 +1,238 @@
+[
+  {
+    "type": "endCall",
+    "function": {
+      "name": "end_patient_intake_call",
+      "description": "End the call after the caller confirms they have no further questions or asks to finish.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "save_patient",
+      "description": "Save the caller's registration. Call only after reading every detail back and the caller confirming it is correct. The result is JSON: if `error` is set, tell the caller `error.message`, ask again for the field named in `error.field`, then call save_patient again with all details and the corrected value.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "first_name": {
+            "description": "Legal first name. If the caller spells it, pass the letters as spelled.",
+            "type": "string"
+          },
+          "last_name": {
+            "description": "Legal last name. If the caller spells it, pass the letters as spelled.",
+            "type": "string"
+          },
+          "phone_number": {
+            "description": "10-digit US phone number, digits only, e.g. 5551234567.",
+            "type": "string"
+          },
+          "date_of_birth": {
+            "description": "Date of birth as YYYY-MM-DD, e.g. 1990-03-15.",
+            "type": "string"
+          },
+          "sex": {
+            "type": "string",
+            "enum": [
+              "Male",
+              "Female",
+              "Other",
+              "Decline to Answer"
+            ]
+          },
+          "address_line_1": {
+            "description": "Street address.",
+            "type": "string"
+          },
+          "address_line_2": {
+            "description": "Apartment, suite or unit. Omit if none.",
+            "type": "string"
+          },
+          "city": {
+            "description": "City.",
+            "type": "string"
+          },
+          "state": {
+            "description": "2-letter US state code, e.g. CA.",
+            "type": "string"
+          },
+          "zip_code": {
+            "description": "5-digit ZIP or ZIP+4, e.g. 90210 or 90210-1234.",
+            "type": "string"
+          },
+          "reason_for_visit": {
+            "description": "Main reason for the visit in a few of the caller's own words, e.g. \"annual checkup\" or \"knee pain\". Omit if they'd rather not say.",
+            "type": "string"
+          },
+          "email": {
+            "description": "Email address. Omit if the caller has none.",
+            "type": "string"
+          },
+          "insurance_provider": {
+            "description": "Insurance company name. Omit if uninsured.",
+            "type": "string"
+          },
+          "insurance_member_id": {
+            "description": "Insurance member ID, letters and digits only.",
+            "type": "string"
+          },
+          "emergency_contact_name": {
+            "description": "Emergency contact's full name.",
+            "type": "string"
+          },
+          "emergency_contact_phone": {
+            "description": "Emergency contact's 10-digit US phone number.",
+            "type": "string"
+          },
+          "preferred_language": {
+            "description": "Preferred language. Omit for English.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "first_name",
+          "last_name",
+          "phone_number",
+          "date_of_birth",
+          "sex",
+          "address_line_1",
+          "city",
+          "state",
+          "zip_code"
+        ]
+      }
+    },
+    "server": {
+      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/save_patient",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "find_patient",
+      "description": "Look up existing patients by phone number. Call it as soon as you have the caller's phone number. The result is JSON: data is a list of matching patients (patient_id, first_name, last_name), empty if there's no match. If error.field is phone_number, ask for the number again.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone_number": {
+            "description": "10-digit US phone number, digits only, e.g. 5551234567.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_number"
+        ]
+      }
+    },
+    "server": {
+      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/find_patient",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_patient",
+      "description": "Update a returning patient's details after the caller confirms the changes. Pass the patient_id from find_patient and only the details that change. The result is JSON: if error is set, tell the caller error.message, ask again for the field named in error.field, then call update_patient again.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient_id": {
+            "description": "The patient_id returned by find_patient.",
+            "type": "string"
+          },
+          "first_name": {
+            "description": "Legal first name. If the caller spells it, pass the letters as spelled.",
+            "type": "string"
+          },
+          "last_name": {
+            "description": "Legal last name. If the caller spells it, pass the letters as spelled.",
+            "type": "string"
+          },
+          "phone_number": {
+            "description": "10-digit US phone number, digits only, e.g. 5551234567.",
+            "type": "string"
+          },
+          "date_of_birth": {
+            "description": "Date of birth as YYYY-MM-DD, e.g. 1990-03-15.",
+            "type": "string"
+          },
+          "sex": {
+            "type": "string",
+            "enum": [
+              "Male",
+              "Female",
+              "Other",
+              "Decline to Answer"
+            ]
+          },
+          "address_line_1": {
+            "description": "Street address.",
+            "type": "string"
+          },
+          "address_line_2": {
+            "description": "Apartment, suite or unit. Omit if none.",
+            "type": "string"
+          },
+          "city": {
+            "description": "City.",
+            "type": "string"
+          },
+          "state": {
+            "description": "2-letter US state code, e.g. CA.",
+            "type": "string"
+          },
+          "zip_code": {
+            "description": "5-digit ZIP or ZIP+4, e.g. 90210 or 90210-1234.",
+            "type": "string"
+          },
+          "reason_for_visit": {
+            "description": "Main reason for the visit in a few of the caller's own words, e.g. \"annual checkup\" or \"knee pain\". Omit if they'd rather not say.",
+            "type": "string"
+          },
+          "email": {
+            "description": "Email address. Omit if the caller has none.",
+            "type": "string"
+          },
+          "insurance_provider": {
+            "description": "Insurance company name. Omit if uninsured.",
+            "type": "string"
+          },
+          "insurance_member_id": {
+            "description": "Insurance member ID, letters and digits only.",
+            "type": "string"
+          },
+          "emergency_contact_name": {
+            "description": "Emergency contact's full name.",
+            "type": "string"
+          },
+          "emergency_contact_phone": {
+            "description": "Emergency contact's 10-digit US phone number.",
+            "type": "string"
+          },
+          "preferred_language": {
+            "description": "Preferred language. Omit for English.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "patient_id"
+        ]
+      }
+    },
+    "server": {
+      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/update_patient",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    }
+  }
+]

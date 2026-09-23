@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -49,6 +50,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Patient Intake API", lifespan=lifespan)
 
 DbSession = Annotated[Session, Depends(get_db)]
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """One line per request: method, path, status and time taken.
+
+    Path only: query strings can carry names and phone numbers. Replaces Uvicorn's access
+    log (disabled in the Dockerfile), which has no timing.
+    """
+    started = time.perf_counter()
+    status_code = 500  # stays 500 if the handler raises
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.info("%s %s %d %.0fms", request.method, request.url.path, status_code, elapsed_ms)
 
 
 # --- Error handling: every error goes out in the same envelope as success. ---
