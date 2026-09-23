@@ -112,8 +112,7 @@ def render_dashboard(
 <body>
 <header>
 <h1>Registered patients</h1>
-<p class="meta">{count} · refreshes every {REFRESH_SECONDS} seconds ·
-<a href="/patients">JSON</a> · <a href="/docs">API docs</a></p>
+<p class="meta">{count} · refreshes every {REFRESH_SECONDS} seconds · <a href="/docs">API docs</a></p>
 </header>
 <form method="get" action="/dashboard">
 {_filter_input("Last name", "last_name", filters, "Davis")}
