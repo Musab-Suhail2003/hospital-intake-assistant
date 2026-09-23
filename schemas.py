@@ -187,6 +187,7 @@ class PatientCreate(BaseModel):
     city: _text(100, min_length=1)
     state: State
     zip_code: ZipCode
+    reason_for_visit: _optional(_text(200)) = None
     insurance_provider: _optional(_text(100)) = None
     insurance_member_id: _optional(MemberId) = None
     preferred_language: Language = "English"
@@ -215,6 +216,7 @@ class PatientUpdate(BaseModel):
     city: Optional[_text(100, min_length=1)] = None
     state: Optional[State] = None
     zip_code: Optional[ZipCode] = None
+    reason_for_visit: _optional(_text(200)) = None
     insurance_provider: _optional(_text(100)) = None
     insurance_member_id: _optional(MemberId) = None
     preferred_language: Optional[Language] = None
@@ -253,6 +255,7 @@ class PatientOut(BaseModel):
     city: str
     state: str
     zip_code: str
+    reason_for_visit: str | None
     insurance_provider: str | None
     insurance_member_id: str | None
     preferred_language: str

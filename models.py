@@ -40,6 +40,8 @@ class Patient(Base):
     city: Mapped[str] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(2))
     zip_code: Mapped[str] = mapped_column(String(10))
+    # Not in the brief's data model; see ensure_added_columns() in db.py.
+    reason_for_visit: Mapped[str | None] = mapped_column(String(200))
     insurance_provider: Mapped[str | None] = mapped_column(String(100))
     insurance_member_id: Mapped[str | None] = mapped_column(String(50))
     preferred_language: Mapped[str] = mapped_column(

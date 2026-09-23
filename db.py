@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
@@ -41,3 +41,16 @@ def get_db():
 def create_tables() -> None:
     # Models must be imported before this runs so they are registered on Base.metadata.
     Base.metadata.create_all(bind=engine)
+    ensure_added_columns()
+
+
+def ensure_added_columns() -> None:
+    """Add columns introduced after the table was first created.
+
+    create_all() never alters an existing table and there is no migrations framework,
+    so each later column gets an idempotent ALTER here. Safe to run on every start.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS reason_for_visit VARCHAR(200)")
+        )
