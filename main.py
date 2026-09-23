@@ -8,13 +8,14 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from dashboard import render_dashboard
 from db import create_tables, get_db
 from models import Patient
 from schemas import (
@@ -162,6 +163,11 @@ def health(db: DbSession):
 
 @app.get("/patients", response_model=Envelope[list[PatientOut]])
 def list_patients(filters: Annotated[PatientFilters, Query()], db: DbSession):
+    return Envelope(data=query_patients(db, filters))
+
+
+def query_patients(db: Session, filters: PatientFilters) -> list[PatientOut]:
+    """Active patients matching the filters, newest first. Shared by the API and dashboard."""
     query = active_patients().order_by(Patient.created_at.desc())
     if filters.last_name:
         query = query.where(func.lower(Patient.last_name) == filters.last_name.lower())
@@ -169,8 +175,32 @@ def list_patients(filters: Annotated[PatientFilters, Query()], db: DbSession):
         query = query.where(Patient.date_of_birth == filters.date_of_birth)
     if filters.phone_number:
         query = query.where(Patient.phone_number == filters.phone_number)
-    patients = db.scalars(query).all()
-    return Envelope(data=[PatientOut.model_validate(p) for p in patients])
+    return [PatientOut.model_validate(p) for p in db.scalars(query).all()]
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, db: DbSession):
+    """Server-rendered table of active patients, filterable like GET /patients.
+
+    An HTML page, so errors are shown on the page rather than as a JSON envelope.
+    """
+    # The filter form submits empty boxes as "", which means "no filter" here.
+    raw = {
+        name: value.strip()
+        for name, value in request.query_params.items()
+        if name in PatientFilters.model_fields and value.strip()
+    }
+    try:
+        filters = PatientFilters.model_validate(raw)
+    except ValidationError as exc:
+        _, message, _ = describe_validation_error(exc.errors())
+        return HTMLResponse(render_dashboard([], raw, error=message), status_code=422)
+    try:
+        patients = query_patients(db, filters)
+    except SQLAlchemyError:
+        logger.exception("Database error on GET /dashboard")
+        return HTMLResponse(render_dashboard([], raw, error=DATABASE_ERROR_MESSAGE), status_code=500)
+    return HTMLResponse(render_dashboard(patients, raw))
 
 
 @app.get("/patients/{patient_id}", response_model=Envelope[PatientOut])
