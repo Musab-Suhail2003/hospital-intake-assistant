@@ -4,10 +4,11 @@ Validators raise ValueError with a message the voice agent can read back to the 
 the 422 handler in main.py forwards that message along with the field name.
 """
 
+import json
 import re
 import unicodedata
 from datetime import date, datetime, timezone
-from typing import Annotated, Generic, Optional, TypeVar
+from typing import Annotated, Any, Generic, Optional, TypeVar
 from uuid import UUID
 
 from email_validator import EmailNotValidError, validate_email
@@ -18,23 +19,23 @@ from pydantic import (
     StringConstraints,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
+from pydantic.alias_generators import to_camel
 
 from models import Sex
-
-US_STATES = {
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
-    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
-    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
-    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-    "DC", "AS", "GU", "MP", "PR", "VI",
-}
+from normalise import (
+    collapse_spelled_name,
+    parse_date,
+    parse_sex,
+    spoken_digits,
+    spoken_email,
+    state_code,
+)
 
 # Unicode letters (so "José", "Müller" pass), joined by single spaces, hyphens or apostrophes.
 _NAME_RE = re.compile(r"[^\W\d_]+(?:[ '\-][^\W\d_]+)*")
-_PHONE_FORMATTING_RE = re.compile(r"[\s().\-]")
-_ZIP_RE = re.compile(r"\d{5}(?:-\d{4})?")
-_MEMBER_ID_RE = re.compile(r"[A-Za-z0-9]+")
+_MEMBER_ID_RE = re.compile(r"[A-Z0-9]+")
 _EARLIEST_DOB = date(1900, 1, 1)
 
 
@@ -46,7 +47,7 @@ def _clean_name(value: object, info: ValidationInfo) -> object:
     if not isinstance(value, str):
         return value
     name = unicodedata.normalize("NFC", value).replace("’", "'")
-    name = " ".join(name.split())
+    name = " ".join(collapse_spelled_name(name).split())
     if not name:
         raise ValueError(f"{_label(info)} is required")
     if len(name) > 50:
@@ -63,12 +64,10 @@ def _normalise_phone(value: object, info: ValidationInfo) -> object:
         value = str(value)
     if not isinstance(value, str):
         return value
-    digits = _PHONE_FORMATTING_RE.sub("", value)
-    if digits.startswith("+1"):
-        digits = digits[2:]
-    elif len(digits) == 11 and digits.startswith("1"):
+    digits = spoken_digits(value)
+    if len(digits) == 11 and digits.startswith("1"):  # "+1 555 ...", "1-800-..."
         digits = digits[1:]
-    if not (len(digits) == 10 and digits.isascii() and digits.isdigit()):
+    if len(digits) != 10:
         raise ValueError(f"{_label(info)} must be a 10-digit US phone number")
     return digits
 
@@ -76,17 +75,10 @@ def _normalise_phone(value: object, info: ValidationInfo) -> object:
 def _parse_date_of_birth(value: object) -> date:
     if isinstance(value, date):
         parsed = value
-    elif isinstance(value, str):
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-            try:
-                parsed = datetime.strptime(value.strip(), fmt).date()
-                break
-            except ValueError:
-                continue
-        else:
-            raise ValueError("Date of birth must be a valid date, like 03/15/1990")
     else:
-        raise ValueError("Date of birth must be a valid date, like 03/15/1990")
+        parsed = parse_date(value) if isinstance(value, str) else None
+        if parsed is None:
+            raise ValueError("Date of birth must be a valid date, like 03/15/1990")
 
     if parsed > datetime.now(timezone.utc).date():
         raise ValueError("Date of birth cannot be in the future")
@@ -96,36 +88,40 @@ def _parse_date_of_birth(value: object) -> date:
 
 
 def _parse_sex(value: object) -> Sex:
-    if isinstance(value, str):
-        for member in Sex:
-            if value.strip().lower() == member.value.lower():
-                return member
-    raise ValueError("Sex must be Male, Female, Other, or Decline to Answer")
+    sex = parse_sex(value) if isinstance(value, str) else None
+    if sex is None:
+        raise ValueError("Sex must be Male, Female, Other, or Decline to Answer")
+    return sex
 
 
 def _normalise_state(value: object) -> object:
     if not isinstance(value, str):
         return value
-    code = value.strip().upper()
-    if code not in US_STATES:
-        raise ValueError("State must be a valid 2-letter US state abbreviation")
+    code = state_code(value)
+    if code is None:
+        raise ValueError("State must be a US state name or 2-letter abbreviation, like CA")
     return code
 
 
 def _check_zip(value: object) -> object:
+    if isinstance(value, int):
+        value = str(value)
     if not isinstance(value, str):
         return value
-    zip_code = value.strip()
-    if not _ZIP_RE.fullmatch(zip_code):
-        raise ValueError("ZIP code must be 5 digits or ZIP+4, like 12345 or 12345-6789")
-    return zip_code
+    digits = spoken_digits(value)
+    if len(digits) == 5:
+        return digits
+    if len(digits) == 9:
+        return f"{digits[:5]}-{digits[5:]}"
+    raise ValueError("ZIP code must be 5 digits or ZIP+4, like 12345 or 12345-6789")
 
 
 def _check_email(value: object) -> object:
     if not isinstance(value, str):
         return value
     try:
-        return validate_email(value.strip(), check_deliverability=False).normalized
+        email = spoken_email(value.strip())
+        return validate_email(email, check_deliverability=False).normalized
     except EmailNotValidError:
         raise ValueError("Email must be a valid email address, like name@example.com")
 
@@ -133,7 +129,8 @@ def _check_email(value: object) -> object:
 def _check_member_id(value: object) -> object:
     if not isinstance(value, str):
         return value
-    member_id = value.strip()
+    # Spoken IDs arrive as "A B C 1 2 3" or "abc-123"; letters from speech have no case.
+    member_id = re.sub(r"[\s\-]", "", value).upper()
     if not _MEMBER_ID_RE.fullmatch(member_id):
         raise ValueError("Insurance member ID may only contain letters and numbers")
     return member_id
@@ -277,3 +274,63 @@ T = TypeVar("T")
 class Envelope(BaseModel, Generic[T]):
     data: T | None = None
     error: ErrorDetail | None = None
+
+
+# --- Vapi tool-call webhook. Field names on the wire are camelCase. ---
+
+class VapiToolCall(BaseModel):
+    """One entry of Vapi's `message.toolCallList`, flattened to id / name / arguments.
+
+    Vapi's docs show three shapes: `{"function": {"name", "arguments"}}`, flat
+    `{"name", "arguments"}` and flat `{"name", "parameters"}`, with arguments either an
+    object or a JSON string. All of them are accepted. Arguments that are not valid
+    JSON become None, so that one call gets an error result instead of the whole
+    request failing.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] | None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        function = data.get("function") or {}
+        arguments = function.get("arguments", data.get("arguments", data.get("parameters")))
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            except json.JSONDecodeError:
+                arguments = None
+        elif arguments is None:
+            arguments = {}
+        return {
+            "id": data.get("id"),
+            "name": function.get("name", data.get("name")),
+            "arguments": arguments,
+        }
+
+
+class VapiMessage(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    # Absent on non-tool messages (status updates etc.), which get an empty reply.
+    tool_call_list: list[VapiToolCall] = []
+
+
+class VapiToolRequest(BaseModel):
+    message: VapiMessage
+
+
+class VapiToolResult(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    name: str
+    tool_call_id: str
+    result: str
+
+
+class VapiToolResponse(BaseModel):
+    results: list[VapiToolResult]

@@ -16,7 +16,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from db import create_tables, get_db
 from models import Patient
-from schemas import Envelope, PatientCreate, PatientFilters, PatientOut, PatientUpdate
+from schemas import (
+    Envelope,
+    ErrorDetail,
+    PatientCreate,
+    PatientFilters,
+    PatientOut,
+    PatientUpdate,
+    VapiToolCall,
+    VapiToolRequest,
+    VapiToolResponse,
+    VapiToolResult,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("intake")
@@ -47,8 +58,9 @@ def error_response(status_code: int, message: str, field: str | None = None) -> 
 _LOC_SOURCES = {"body", "query", "path", "header", "cookie"}
 
 
-def validation_error_response(errors: list[dict]) -> JSONResponse:
-    """Report only the first failing field, so the voice agent re-prompts for one thing."""
+def describe_validation_error(errors: list[dict]) -> tuple[int, str, str | None]:
+    """Reduce Pydantic errors to (status, message, field) for the first failing field
+    only, so the voice agent re-prompts for one thing."""
     err = errors[0]
     loc = err["loc"]
     if loc and loc[0] in _LOC_SOURCES:
@@ -56,10 +68,10 @@ def validation_error_response(errors: list[dict]) -> JSONResponse:
     field = str(loc[0]) if loc else None
 
     if err["type"] == "json_invalid":
-        return error_response(status.HTTP_400_BAD_REQUEST, "Request body is not valid JSON")
+        return status.HTTP_400_BAD_REQUEST, "Request body is not valid JSON", None
     if field is None:
         message = "Request body is required" if err["type"] == "missing" else err["msg"]
-        return error_response(status.HTTP_422_UNPROCESSABLE_CONTENT, message)
+        return status.HTTP_422_UNPROCESSABLE_CONTENT, message, None
 
     label = field.replace("_", " ").capitalize()
     if err["type"] == "value_error":
@@ -71,7 +83,11 @@ def validation_error_response(errors: list[dict]) -> JSONResponse:
         message = f"{label} must be {err['ctx']['max_length']} characters or fewer"
     else:
         message = f"{label}: {err['msg']}"
-    return error_response(status.HTTP_422_UNPROCESSABLE_CONTENT, message, field)
+    return status.HTTP_422_UNPROCESSABLE_CONTENT, message, field
+
+
+def validation_error_response(errors: list[dict]) -> JSONResponse:
+    return error_response(*describe_validation_error(errors))
 
 
 @app.exception_handler(RequestValidationError)
@@ -89,14 +105,16 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return error_response(exc.status_code, str(exc.detail))
 
 
+# Worded so the voice agent can read it to the caller as-is.
+DATABASE_ERROR_MESSAGE = (
+    "We couldn't reach the patient records system. Please try again in a moment."
+)
+
+
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(request: Request, exc: SQLAlchemyError):
     logger.error("Database error on %s %s", request.method, request.url.path, exc_info=exc)
-    # Worded so the voice agent can read it to the caller as-is.
-    return error_response(
-        status.HTTP_500_INTERNAL_SERVER_ERROR,
-        "We couldn't reach the patient records system. Please try again in a moment.",
-    )
+    return error_response(status.HTTP_500_INTERNAL_SERVER_ERROR, DATABASE_ERROR_MESSAGE)
 
 
 @app.exception_handler(Exception)
@@ -111,6 +129,9 @@ def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
     expected = os.environ.get("API_KEY")
     if not expected:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Server API key is not configured")
+    # Vapi's Bearer Token credential prepends "Bearer " unless that toggle is switched off.
+    if x_api_key is not None:
+        x_api_key = x_api_key.removeprefix("Bearer ")
     if x_api_key is None or not secrets.compare_digest(x_api_key.encode(), expected.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid X-API-Key header")
 
@@ -160,13 +181,17 @@ def get_patient(patient_id: UUID, db: DbSession):
     dependencies=[Depends(require_api_key)],
 )
 def create_patient(payload: PatientCreate, db: DbSession):
+    return Envelope(data=insert_patient(db, payload))
+
+
+def insert_patient(db: Session, payload: PatientCreate) -> PatientOut:
     patient = Patient(**payload.model_dump())
     db.add(patient)
     db.commit()
     db.refresh(patient)
     out = PatientOut.model_validate(patient)
     logger.info("Patient created: %s", out.model_dump_json())
-    return Envelope(data=out)
+    return out
 
 
 @app.put(
@@ -198,3 +223,48 @@ def delete_patient(patient_id: UUID, db: DbSession):
     out = PatientOut.model_validate(patient)
     logger.info("Patient soft-deleted: %s", out.model_dump_json())
     return Envelope(data=out)
+
+
+# --- Vapi tool webhook ---
+
+@app.post(
+    "/tools/save_patient",
+    response_model=VapiToolResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def save_patient_tool(body: VapiToolRequest, db: DbSession):
+    """Called by Vapi when the agent invokes `save_patient`, after the caller confirms.
+
+    Validation and database failures still answer 200 in Vapi's `results` format, so
+    the agent always gets a result it can act on mid-call. Each `result` is our usual
+    envelope as a JSON string: on failure the agent sees `error.message` and
+    `error.field` and can re-prompt for just that field.
+    """
+    results = [
+        VapiToolResult(
+            name=call.name,
+            tool_call_id=call.id,
+            result=run_save_patient(db, call).model_dump_json(),
+        )
+        for call in body.message.tool_call_list
+    ]
+    return VapiToolResponse(results=results)
+
+
+def run_save_patient(db: Session, call: VapiToolCall) -> Envelope[PatientOut]:
+    if call.name != "save_patient":
+        return Envelope(error=ErrorDetail(message=f"Unknown tool: {call.name}"))
+    if call.arguments is None:
+        return Envelope(error=ErrorDetail(message="Tool call arguments are not valid JSON"))
+    try:
+        payload = PatientCreate.model_validate(call.arguments)
+    except ValidationError as exc:
+        _, message, field = describe_validation_error(exc.errors())
+        logger.info("save_patient %s rejected: %s (field=%s)", call.id, message, field)
+        return Envelope(error=ErrorDetail(message=message, field=field))
+    try:
+        return Envelope(data=insert_patient(db, payload))
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error in save_patient %s", call.id)
+        return Envelope(error=ErrorDetail(message=DATABASE_ERROR_MESSAGE))
