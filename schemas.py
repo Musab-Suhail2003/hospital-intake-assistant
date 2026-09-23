@@ -266,6 +266,24 @@ class PatientOut(BaseModel):
     deleted_at: datetime | None
 
 
+class FindPatientArgs(BaseModel):
+    phone_number: Phone
+
+
+class PatientMatch(BaseModel):
+    """What find_patient reveals about a match: enough to ask "is this you?", no more."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    patient_id: UUID
+    first_name: str
+    last_name: str
+
+
+class UpdatePatientArgs(PatientUpdate):
+    patient_id: UUID
+
+
 class ErrorDetail(BaseModel):
     message: str
     field: str | None = None

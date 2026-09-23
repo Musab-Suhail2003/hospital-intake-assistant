@@ -1,11 +1,12 @@
 import logging
 import os
 import secrets
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -19,10 +20,13 @@ from models import Patient
 from schemas import (
     Envelope,
     ErrorDetail,
+    FindPatientArgs,
     PatientCreate,
     PatientFilters,
+    PatientMatch,
     PatientOut,
     PatientUpdate,
+    UpdatePatientArgs,
     VapiToolCall,
     VapiToolRequest,
     VapiToolResponse,
@@ -180,18 +184,41 @@ def get_patient(patient_id: UUID, db: DbSession):
     response_model=Envelope[PatientOut],
     dependencies=[Depends(require_api_key)],
 )
-def create_patient(payload: PatientCreate, db: DbSession):
-    return Envelope(data=insert_patient(db, payload))
+def create_patient(payload: PatientCreate, db: DbSession, response: Response):
+    """201 with the new record, or 200 with the existing one if already registered."""
+    patient, created = register_patient(db, payload)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return Envelope(data=patient)
 
 
-def insert_patient(db: Session, payload: PatientCreate) -> PatientOut:
+def register_patient(db: Session, payload: PatientCreate) -> tuple[PatientOut, bool]:
+    """Insert a new patient unless the same person is already registered.
+
+    Returns the record and whether it was created. "Same person" means the same phone
+    number, name and date of birth: phone alone isn't enough, because family members
+    share numbers. This also makes a retried save_patient call harmless.
+    """
+    existing = db.scalar(
+        active_patients().where(
+            Patient.phone_number == payload.phone_number,
+            func.lower(Patient.first_name) == payload.first_name.lower(),
+            func.lower(Patient.last_name) == payload.last_name.lower(),
+            Patient.date_of_birth == payload.date_of_birth,
+        )
+    )
+    if existing is not None:
+        out = PatientOut.model_validate(existing)
+        logger.info("Patient already registered, returning existing: %s", out.model_dump_json())
+        return out, False
+
     patient = Patient(**payload.model_dump())
     db.add(patient)
     db.commit()
     db.refresh(patient)
     out = PatientOut.model_validate(patient)
     logger.info("Patient created: %s", out.model_dump_json())
-    return out
+    return out, True
 
 
 @app.put(
@@ -201,13 +228,17 @@ def insert_patient(db: Session, payload: PatientCreate) -> PatientOut:
 )
 def update_patient(patient_id: UUID, payload: PatientUpdate, db: DbSession):
     patient = get_active_patient(db, patient_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    return Envelope(data=apply_update(db, patient, payload.model_dump(exclude_unset=True)))
+
+
+def apply_update(db: Session, patient: Patient, changes: dict) -> PatientOut:
+    for field, value in changes.items():
         setattr(patient, field, value)
     db.commit()
     db.refresh(patient)
     out = PatientOut.model_validate(patient)
     logger.info("Patient updated: %s", out.model_dump_json())
-    return Envelope(data=out)
+    return out
 
 
 @app.delete(
@@ -225,7 +256,46 @@ def delete_patient(patient_id: UUID, db: DbSession):
     return Envelope(data=out)
 
 
-# --- Vapi tool webhook ---
+# --- Vapi tool webhooks ---
+#
+# Vapi posts each tool call to that tool's URL below. Validation and database failures
+# still answer 200 in Vapi's `results` format, so the agent always gets a result it can
+# act on mid-call. Each `result` is our usual envelope as a JSON string: on failure the
+# agent sees `error.message` and `error.field` and can re-prompt for just that field.
+
+ToolHandler = Callable[[Session, dict], Envelope]
+
+
+def answer_tool_calls(
+    body: VapiToolRequest, db: Session, tool_name: str, handler: ToolHandler
+) -> VapiToolResponse:
+    results = [
+        VapiToolResult(
+            name=call.name,
+            tool_call_id=call.id,
+            result=run_tool_call(db, call, tool_name, handler).model_dump_json(),
+        )
+        for call in body.message.tool_call_list
+    ]
+    return VapiToolResponse(results=results)
+
+
+def run_tool_call(db: Session, call: VapiToolCall, tool_name: str, handler: ToolHandler) -> Envelope:
+    if call.name != tool_name:
+        return Envelope(error=ErrorDetail(message=f"Unknown tool: {call.name}"))
+    if call.arguments is None:
+        return Envelope(error=ErrorDetail(message="Tool call arguments are not valid JSON"))
+    try:
+        return handler(db, call.arguments)
+    except ValidationError as exc:
+        _, message, field = describe_validation_error(exc.errors())
+        logger.info("%s %s rejected: %s (field=%s)", call.name, call.id, message, field)
+        return Envelope(error=ErrorDetail(message=message, field=field))
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error in %s %s", call.name, call.id)
+        return Envelope(error=ErrorDetail(message=DATABASE_ERROR_MESSAGE))
+
 
 @app.post(
     "/tools/save_patient",
@@ -233,38 +303,57 @@ def delete_patient(patient_id: UUID, db: DbSession):
     dependencies=[Depends(require_api_key)],
 )
 def save_patient_tool(body: VapiToolRequest, db: DbSession):
-    """Called by Vapi when the agent invokes `save_patient`, after the caller confirms.
-
-    Validation and database failures still answer 200 in Vapi's `results` format, so
-    the agent always gets a result it can act on mid-call. Each `result` is our usual
-    envelope as a JSON string: on failure the agent sees `error.message` and
-    `error.field` and can re-prompt for just that field.
-    """
-    results = [
-        VapiToolResult(
-            name=call.name,
-            tool_call_id=call.id,
-            result=run_save_patient(db, call).model_dump_json(),
-        )
-        for call in body.message.tool_call_list
-    ]
-    return VapiToolResponse(results=results)
+    """Register the caller, once they have confirmed their details."""
+    return answer_tool_calls(body, db, "save_patient", handle_save_patient)
 
 
-def run_save_patient(db: Session, call: VapiToolCall) -> Envelope[PatientOut]:
-    if call.name != "save_patient":
-        return Envelope(error=ErrorDetail(message=f"Unknown tool: {call.name}"))
-    if call.arguments is None:
-        return Envelope(error=ErrorDetail(message="Tool call arguments are not valid JSON"))
-    try:
-        payload = PatientCreate.model_validate(call.arguments)
-    except ValidationError as exc:
-        _, message, field = describe_validation_error(exc.errors())
-        logger.info("save_patient %s rejected: %s (field=%s)", call.id, message, field)
-        return Envelope(error=ErrorDetail(message=message, field=field))
-    try:
-        return Envelope(data=insert_patient(db, payload))
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("Database error in save_patient %s", call.id)
-        return Envelope(error=ErrorDetail(message=DATABASE_ERROR_MESSAGE))
+def handle_save_patient(db: Session, arguments: dict) -> Envelope[PatientOut]:
+    patient, _ = register_patient(db, PatientCreate.model_validate(arguments))
+    return Envelope(data=patient)
+
+
+@app.post(
+    "/tools/find_patient",
+    response_model=VapiToolResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def find_patient_tool(body: VapiToolRequest, db: DbSession):
+    """Look up existing patients by phone number, so the agent can offer an update."""
+    return answer_tool_calls(body, db, "find_patient", handle_find_patient)
+
+
+def handle_find_patient(db: Session, arguments: dict) -> Envelope[list[PatientMatch]]:
+    phone_number = FindPatientArgs.model_validate(arguments).phone_number
+    patients = db.scalars(
+        active_patients()
+        .where(Patient.phone_number == phone_number)
+        .order_by(Patient.created_at)
+    ).all()
+    return Envelope(data=[PatientMatch.model_validate(p) for p in patients])
+
+
+@app.post(
+    "/tools/update_patient",
+    response_model=VapiToolResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def update_patient_tool(body: VapiToolRequest, db: DbSession):
+    """Change a returning patient's details, once they have confirmed the changes."""
+    return answer_tool_calls(body, db, "update_patient", handle_update_patient)
+
+
+def handle_update_patient(db: Session, arguments: dict) -> Envelope[PatientOut]:
+    # Models often send "" or null for fields they aren't changing. Treat those as not
+    # sent, so an update made by voice can never clear a field by accident.
+    sent = {
+        key: value
+        for key, value in arguments.items()
+        if value is not None and not (isinstance(value, str) and not value.strip())
+    }
+    args = UpdatePatientArgs.model_validate(sent)
+    patient = db.scalar(active_patients().where(Patient.patient_id == args.patient_id))
+    if patient is None:
+        logger.info("update_patient: patient %s not found", args.patient_id)
+        return Envelope(error=ErrorDetail(message="Patient not found", field="patient_id"))
+    changes = args.model_dump(exclude_unset=True, exclude={"patient_id"})
+    return Envelope(data=apply_update(db, patient, changes))
