@@ -327,11 +327,10 @@ On Railway these appear in the service's logs.
   than swapped. Two-digit years become the most recent year that isn't in the future.
   "Twenty five" as a year is rejected as ambiguous.
 - **Only English and Spanish.** Spanish covers the common forms, not every regional
-  variant, and tool messages are in English for the agent to translate. Urdu and Hindi were
-  considered and left out: with language detection open, the first test call's
-  English-spoken name was transcribed in Urdu script, the transcriber can't be limited to
-  switching only on whole sentences, and whether the voice speaks Urdu is unverified. The
-  transcriber is therefore locked to English and Spanish.
+  variant, and tool messages are in English for the agent to translate. Urdu and Hindi are
+  left out for now: with language detection open, the first test call's English-spoken name
+  was transcribed in Urdu script, so the transcriber is locked to English and Spanish. A
+  switch-on-request design is planned (Next Steps).
 - **A field can't be cleared by voice.** `update_patient` ignores blank values so that a
   model's empty placeholders never wipe data; clearing needs `PUT` with `null`.
 - **No migrations framework.** Tables are created on startup. Changes made after launch
@@ -353,10 +352,11 @@ On Railway these appear in the service's logs.
 3. **Real scheduling:** provider calendars, rescheduling, cancelling by voice, reminders.
 4. **Alembic migrations** in place of create-on-startup.
 5. **Pagination** on the list endpoints and the dashboard.
-6. **More languages, such as Urdu and Hindi:** open the transcriber to them, store names
-   and addresses in English letters (with a server check that rejects other scripts), switch
-   only when the caller speaks a full sentence in the language, and confirm with test calls
-   that English callers aren't affected. Localised tool messages instead of relying on the
+6. **Urdu and Hindi on request:** when a caller asks ("Urdu bolo"), hand the call to a
+   second assistant in a Vapi squad whose transcriber takes Urdu and English. It speaks Urdu
+   and stores names and addresses in English letters, with a server check that rejects other
+   scripts. Detection stays off for everyone else, so English callers are unaffected. Needs
+   test calls in both languages. Also: localised tool messages instead of relying on the
    agent to translate.
 7. **Database hardening:** a `statement_timeout`, a functional index for case-insensitive
    name search, and partial indexes that skip soft-deleted rows.
