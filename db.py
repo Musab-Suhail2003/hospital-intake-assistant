@@ -41,16 +41,27 @@ def get_db():
 def create_tables() -> None:
     # Models must be imported before this runs so they are registered on Base.metadata.
     Base.metadata.create_all(bind=engine)
-    ensure_added_columns()
+    upgrade_existing_tables()
 
 
-def ensure_added_columns() -> None:
-    """Add columns introduced after the table was first created.
+def upgrade_existing_tables() -> None:
+    """Apply schema changes made after the tables were first created.
 
-    create_all() never alters an existing table and there is no migrations framework,
-    so each later column gets an idempotent ALTER here. Safe to run on every start.
+    create_all() never alters an existing table and there is no migrations framework, so
+    each later change is an idempotent statement here, safe to run on every start:
+
+    - patients.reason_for_visit: a column added after launch.
+    - appointments.cancelled_at: cancelling keeps the row, so "one booking per time" must
+      only count live bookings. The plain unique constraint on starts_at is swapped for a
+      partial unique index that ignores cancelled rows.
     """
+    statements = (
+        "ALTER TABLE patients ADD COLUMN IF NOT EXISTS reason_for_visit VARCHAR(200)",
+        "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+        "ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_starts_at_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_appointments_live_starts_at "
+        "ON appointments (starts_at) WHERE cancelled_at IS NULL",
+    )
     with engine.begin() as conn:
-        conn.execute(
-            text("ALTER TABLE patients ADD COLUMN IF NOT EXISTS reason_for_visit VARCHAR(200)")
-        )
+        for statement in statements:
+            conn.execute(text(statement))

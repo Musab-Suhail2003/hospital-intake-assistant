@@ -226,7 +226,7 @@ def dashboard(request: Request, db: DbSession):
     try:
         patients = query_patients(db, filters)
         upcoming = db.scalars(
-            select(Appointment).where(Appointment.starts_at > func.now()).order_by(Appointment.starts_at)
+            live_appointments().where(Appointment.starts_at > func.now()).order_by(Appointment.starts_at)
         ).all()
         calls = query_calls(db, limit=20)
     except SQLAlchemyError:
@@ -312,8 +312,14 @@ def apply_update(db: Session, patient: Patient, changes: dict) -> PatientOut:
     dependencies=[Depends(require_api_key)],
 )
 def delete_patient(patient_id: UUID, db: DbSession):
+    """Soft delete. Also cancels the patient's upcoming appointments, freeing those times."""
     patient = get_active_patient(db, patient_id)
     patient.deleted_at = func.now()
+    upcoming = live_appointments().where(
+        Appointment.patient_id == patient_id, Appointment.starts_at > func.now()
+    )
+    for appointment in db.scalars(upcoming):
+        appointment.cancelled_at = func.now()
     db.commit()
     db.refresh(patient)
     out = PatientOut.model_validate(patient)
@@ -475,6 +481,11 @@ def handle_book_appointment(db: Session, arguments: dict) -> Envelope[Appointmen
 
 # --- Appointments (mock scheduling; slots come from scheduling.py) ---
 
+def live_appointments():
+    """Base query for appointments: cancelled ones are never counted or listed."""
+    return select(Appointment).where(Appointment.cancelled_at.is_(None))
+
+
 def appointment_out(appointment: Appointment) -> AppointmentOut:
     return AppointmentOut(
         appointment_id=appointment.appointment_id,
@@ -482,11 +493,12 @@ def appointment_out(appointment: Appointment) -> AppointmentOut:
         starts_at=appointment.starts_at,
         label=spoken(appointment.starts_at),
         created_at=appointment.created_at,
+        cancelled_at=appointment.cancelled_at,
     )
 
 
 def find_slots(db: Session, query: SlotQuery) -> list[SlotOut]:
-    booked = {t.astimezone(timezone.utc) for t in db.scalars(select(Appointment.starts_at))}
+    booked = {a.starts_at.astimezone(timezone.utc) for a in db.scalars(live_appointments())}
     slots = open_slots(booked, day=query.day, part_of_day=query.part_of_day)
     return [SlotOut(starts_at=slot, label=spoken(slot)) for slot in slots]
 
@@ -504,7 +516,7 @@ def book_appointment(db: Session, args: BookAppointment) -> tuple[int, Envelope[
             field="starts_at",
         ))
     existing = db.scalar(
-        select(Appointment).where(
+        live_appointments().where(
             Appointment.patient_id == args.patient_id, Appointment.starts_at > func.now()
         )
     )
@@ -517,7 +529,7 @@ def book_appointment(db: Session, args: BookAppointment) -> tuple[int, Envelope[
     db.add(appointment)
     try:
         db.commit()
-    except IntegrityError:  # the unique starts_at: someone booked this time first
+    except IntegrityError:  # the unique index on live starts_at: someone booked it first
         db.rollback()
         return status.HTTP_409_CONFLICT, Envelope(error=ErrorDetail(
             message="That time has just been taken. Please choose another.", field="starts_at"
@@ -536,7 +548,8 @@ def list_slots(query: Annotated[SlotQuery, Query()], db: DbSession):
 
 @app.get("/appointments", response_model=Envelope[list[AppointmentOut]])
 def list_appointments(db: DbSession, patient_id: UUID | None = None):
-    query = select(Appointment).order_by(Appointment.starts_at)
+    """Live (not cancelled) appointments, soonest first."""
+    query = live_appointments().order_by(Appointment.starts_at)
     if patient_id is not None:
         query = query.where(Appointment.patient_id == patient_id)
     return Envelope(data=[appointment_out(a) for a in db.scalars(query)])
@@ -553,6 +566,24 @@ def create_appointment(payload: BookAppointment, db: DbSession):
     if envelope.error is not None:
         return error_response(status_code, envelope.error.message, envelope.error.field)
     return envelope
+
+
+@app.delete(
+    "/appointments/{appointment_id}",
+    response_model=Envelope[AppointmentOut],
+    dependencies=[Depends(require_api_key)],
+)
+def cancel_appointment(appointment_id: UUID, db: DbSession):
+    """Cancel a booking: sets cancelled_at, keeps the row, and frees the time."""
+    appointment = db.scalar(live_appointments().where(Appointment.appointment_id == appointment_id))
+    if appointment is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Appointment not found")
+    appointment.cancelled_at = func.now()
+    db.commit()
+    db.refresh(appointment)
+    out = appointment_out(appointment)
+    logger.info("Appointment cancelled: %s", out.model_dump_json())
+    return Envelope(data=out)
 
 
 # --- Calls: transcripts and summaries from Vapi's end-of-call reports ---

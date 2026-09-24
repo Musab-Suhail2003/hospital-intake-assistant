@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -40,7 +40,7 @@ class Patient(Base):
     city: Mapped[str] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(2))
     zip_code: Mapped[str] = mapped_column(String(10))
-    # Not in the brief's data model; see ensure_added_columns() in db.py.
+    # Not in the brief's data model; see upgrade_existing_tables() in db.py.
     reason_for_visit: Mapped[str | None] = mapped_column(String(200))
     insurance_provider: Mapped[str | None] = mapped_column(String(100))
     insurance_member_id: Mapped[str | None] = mapped_column(String(50))
@@ -88,14 +88,25 @@ class Call(Base):
 
 
 class Appointment(Base):
-    """A booked first appointment. The slots themselves are mock data (scheduling.py)."""
+    """A booked first appointment. The slots themselves are mock data (scheduling.py).
+
+    Cancelling sets cancelled_at and keeps the row, like the soft delete on patients.
+    """
 
     __tablename__ = "appointments"
+    # One mock provider, so a time can hold only one live booking; the database enforces it.
+    # Cancelled bookings don't count, so cancelling frees the time.
+    __table_args__ = (
+        Index(
+            "uq_appointments_live_starts_at", "starts_at",
+            unique=True, postgresql_where=text("cancelled_at IS NULL"),
+        ),
+    )
 
     appointment_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     patient_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("patients.patient_id"), index=True)
-    # One mock provider, so a time can only be booked once; the database enforces it.
-    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), unique=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

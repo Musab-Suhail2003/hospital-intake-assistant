@@ -2,7 +2,10 @@
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+
 from conftest import AUTH, create_patient, tool_call
+from db import engine, upgrade_existing_tables
 from scheduling import PRACTICE_TZ, bookable_days, is_bookable, open_slots, slots_on, spoken
 
 # A Friday afternoon in September (practice time is UTC-4 then).
@@ -98,3 +101,56 @@ def test_booking_validation(client):
     unknown = client.post("/appointments", json={"patient_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "starts_at": slot["starts_at"]}, headers=AUTH)
     assert unknown.status_code == 404
     assert client.post("/appointments", json={"patient_id": patient["patient_id"], "starts_at": slot["starts_at"]}).status_code == 401
+
+
+def test_cancelling_frees_the_time(client):
+    patient = create_patient(client)
+    slot = client.get("/appointments/slots").json()["data"][0]
+    body = {"patient_id": patient["patient_id"], "starts_at": slot["starts_at"]}
+    booked = client.post("/appointments", json=body, headers=AUTH).json()["data"]
+    url = f"/appointments/{booked['appointment_id']}"
+
+    assert client.delete(url).status_code == 401
+    cancelled = client.delete(url, headers=AUTH)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["data"]["cancelled_at"] is not None
+    assert client.delete(url, headers=AUTH).status_code == 404  # already cancelled
+
+    assert client.get("/appointments").json()["data"] == []
+    assert slot["starts_at"] in [s["starts_at"] for s in client.get("/appointments/slots").json()["data"]]
+    assert client.post("/appointments", json=body, headers=AUTH).status_code == 201  # bookable again
+
+
+def test_deleting_a_patient_cancels_their_appointments(client):
+    patient = create_patient(client)
+    slot = client.get("/appointments/slots").json()["data"][0]
+    client.post("/appointments", json={"patient_id": patient["patient_id"], "starts_at": slot["starts_at"]}, headers=AUTH)
+
+    assert client.delete(f"/patients/{patient['patient_id']}", headers=AUTH).status_code == 200
+    assert client.get("/appointments").json()["data"] == []
+    assert slot["starts_at"] in [s["starts_at"] for s in client.get("/appointments/slots").json()["data"]]
+
+
+def test_startup_upgrade_converts_the_live_table(client):
+    """Rebuild the table as it was first deployed, then run the startup upgrade on it."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP INDEX uq_appointments_live_starts_at"))
+        conn.execute(text("ALTER TABLE appointments DROP COLUMN cancelled_at"))
+        conn.execute(text("ALTER TABLE appointments ADD CONSTRAINT appointments_starts_at_key UNIQUE (starts_at)"))
+
+    upgrade_existing_tables()
+    upgrade_existing_tables()  # safe to run on every start
+
+    with engine.connect() as conn:
+        constraints = conn.execute(text(
+            "SELECT conname FROM pg_constraint WHERE conrelid = 'appointments'::regclass AND contype = 'u'"
+        )).scalars().all()
+        indexes = conn.execute(text(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_appointments_live_starts_at'"
+        )).scalars().all()
+        columns = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'appointments'"
+        )).scalars().all()
+    assert constraints == []
+    assert len(indexes) == 1 and "WHERE (cancelled_at IS NULL)" in indexes[0]
+    assert "cancelled_at" in columns

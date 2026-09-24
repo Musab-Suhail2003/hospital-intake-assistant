@@ -329,6 +329,7 @@ class AppointmentOut(BaseModel):
     starts_at: datetime
     label: str
     created_at: datetime
+    cancelled_at: datetime | None
 
 
 class CallOut(BaseModel):
