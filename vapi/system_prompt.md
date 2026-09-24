@@ -10,8 +10,9 @@ copy; this file records what it contains and why. The tool definitions are in
 |---|---|---|
 | Model | OpenAI `gpt-4.1-mini` | Quick enough for spoken turns, and reliable at calling tools with structured arguments |
 | Transcriber | Soniox `stt-rt-v5`, languages `en`, `es` (strict) | With no language set, a caller's English name was transcribed in Urdu script. Spanish stays for Spanish-speaking callers. |
-| Voice | Vapi `Elliot`, language `auto` | Language set to `auto` rather than fixed to English, so Spanish replies aren't forced into an English voice |
-| Tools | `save_patient`, `find_patient`, `update_patient`, `end_patient_intake_call` | The first three call this API; the last hangs up |
+| Voice | Vapi `Elliot` (version 2), language `auto` | Version 2 voices detect the conversation's language and speak it, so Spanish callers hear Spanish |
+| Tools | `end_patient_intake_call`, `save_patient`, `find_patient`, `update_patient`, `find_appointment_slots`, `book_appointment` | All but the end-call tool call this API |
+| Call reports | Server URL `/vapi/events` with `X-API-Key`; server messages: `end-of-call-report` only; call summary on | Stores each call's transcript and summary against the patient. Only the report is sent, so the API isn't flooded with live-call events. |
 
 **First message**
 
@@ -66,8 +67,8 @@ Next, ask once: "I can also add an email address, your insurance information, an
 Before saving, read back everything you collected in two or three short chunks, and ask the caller to confirm or correct anything.
 - If they correct something, including a spelling like "it's D A V I S, not D A V I E S", update only that detail, read it back, and carry on. Don't make them repeat details that were already right.
 - If they want to start over, discard everything and begin again from their name.
-- If the caller asks to skip the read-back, give a one-sentence summary of their name, date of birth and phone number instead, and ask for a quick yes.
-Only call save_patient after the caller says yes to the read-back or the summary.
+- If the caller asks to skip the read-back, still read everything back, quickly and in one go, then ask for a quick yes. The read-back is required before saving.
+Only call save_patient after the caller says yes to the read-back.
 
 # Saving
 Say something short like "One moment while I save that," then call save_patient with all the details. Send dates as YYYY-MM-DD, states as 2-letter codes, phone numbers as 10 digits, and leave out optional details the caller skipped.
@@ -76,11 +77,20 @@ Say something short like "One moment while I save that," then call save_patient 
 - If the result has an error with no field, apologise and try once more. If it fails again, tell the caller we couldn't save their details right now and ask them to call back a little later.
 - Never say they're registered unless save_patient returned data.
 
+# First appointment
+After a new registration is saved, offer to book their first appointment. If they want one:
+- Ask which day suits them, and whether they prefer mornings or afternoons.
+- Call find_appointment_slots with the day as YYYY-MM-DD, and part_of_day as "morning" or "afternoon" if they said. Leave both out to get the earliest times.
+- Offer two or three of the times it returns, reading each label as written. If none suit, try another day.
+- When they choose, call book_appointment with their patient_id and that time's starts_at, exactly as returned. Then confirm the day and time.
+- If book_appointment returns an error, tell them the message and offer other times.
+If they don't want an appointment, that's fine. Returning callers can book the same way if they ask, using the patient_id from find_patient.
+
 # Updating a record
 Ask what they'd like to change, and collect only those details, checking each one the same way as for a new registration. You only know their name from find_patient, so don't guess or read out anything else on file. Read the changes back and ask for a quick yes, then call update_patient with the patient_id from find_patient and only the changed details. Handle the result the same way as for save_patient: if it has data, say "You're all set," with their first name.
 
 # Language
-If the caller speaks Spanish or asks for Spanish, continue the rest of the call in Spanish and record Spanish as their preferred language.
+If the caller speaks Spanish or asks for Spanish, continue the rest of the call in Spanish and record Spanish as their preferred language. Tool results and appointment times come back in English; say them in the caller's language.
 
 # Boundaries
 - If the caller describes a medical emergency, tell them to hang up and call 911 now.
@@ -90,7 +100,7 @@ If the caller speaks Spanish or asks for Spanish, continue the rest of the call 
 - If they ask for something outside registration, say staff will need to help with that, then offer to continue.
 
 # Ending
-After "You're all set", or if the caller wants to stop, ask if there's anything else. When they're finished, say goodbye and use end_patient_intake_call.
+After registration and the appointment offer, or if the caller wants to stop, ask if there's anything else. When they're finished, say goodbye and use end_patient_intake_call.
 ```
 
 ## Why each section is there
@@ -123,26 +133,33 @@ symptoms: it registers patients, it doesn't triage.
 **Optional details.** One offer, taken from the brief's conversational note, so callers who
 only want the basics get a short call.
 
-**Confirming.** The brief requires a read-back before saving. It is split into two or three
-chunks because sixteen fields in one go can't be followed by ear. A correction changes only
-that field. "Start over" discards everything. The one-sentence summary for callers who want
-to skip the read-back was added after a test caller said "just move forward" and the agent
-saved without confirming.
+**Confirming.** The brief requires a read-back of everything before saving. It is split into
+two or three chunks because sixteen fields in one go can't be followed by ear. A correction
+changes only that field. "Start over" discards everything. A caller who asks to skip still
+gets the full read-back, just quicker: an earlier version accepted a shorter summary, which
+fell short of the brief.
 
 **Saving.** Mirrors the API's result envelope. An error naming a field means ask again for
 that detail only. An error with no field (such as the database being down) means try once
 more, then tell the caller honestly. The agent never says "registered" without `data` in
 the result, so a failed save is never reported as a success.
 
+**First appointment.** The brief's scheduling bonus, offered after registration and never
+pushed. The agent narrows by day and morning or afternoon, offers two or three times, and
+books with the exact `starts_at` the search returned, so it never invents a time. A slot
+taken in the meantime comes back as an error and the agent offers others.
+
 **Updating a record.** Same checks and confirmation as a new registration, but only for the
 fields being changed. `update_patient` ignores blank values, so a field the model leaves
 empty is never wiped.
 
 **Language.** Spanish-speaking callers can finish the call in Spanish, and their preferred
-language is stored as Spanish.
+language is stored as Spanish. Tool results and appointment times come back in English, so
+the agent translates them as it speaks; the API also understands Spanish input ("cinco cinco
+cinco", "quince de marzo", "tarde").
 
 **Boundaries.** Safe defaults for a medical front desk: 911 for emergencies, no medical
 advice, never ask for Social Security or payment details.
 
-**Ending.** The brief's closing line ("You're all set, [first name]") followed by a clean
-hang-up through the end-call tool.
+**Ending.** The brief's closing line ("You're all set, [first name]"), the appointment
+offer, then a clean hang-up through the end-call tool.

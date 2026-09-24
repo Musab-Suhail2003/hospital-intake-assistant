@@ -234,5 +234,65 @@
         "X-API-Key": "<API_KEY>"
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "find_appointment_slots",
+      "description": "Find free first-appointment times. The result is JSON: data is a list of slots, each with starts_at (pass it to book_appointment unchanged) and label (how to say it, in the practice's local time).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "description": "Day to look at, as YYYY-MM-DD. Omit for the earliest free times.",
+            "type": "string"
+          },
+          "part_of_day": {
+            "description": "Omit if the caller has no preference.",
+            "type": "string",
+            "enum": [
+              "morning",
+              "afternoon"
+            ]
+          }
+        }
+      }
+    },
+    "server": {
+      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/find_appointment_slots",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "book_appointment",
+      "description": "Book the first appointment the caller chose. Pass the patient_id from save_patient or find_patient, and the chosen slot's starts_at exactly as find_appointment_slots returned it. The result is JSON: if error is set, tell the caller error.message and offer other times.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient_id": {
+            "description": "The patient_id from save_patient or find_patient.",
+            "type": "string"
+          },
+          "starts_at": {
+            "description": "The chosen slot's starts_at, unchanged.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "patient_id",
+          "starts_at"
+        ]
+      }
+    },
+    "server": {
+      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/book_appointment",
+      "headers": {
+        "X-API-Key": "<API_KEY>"
+      }
+    }
   }
 ]
