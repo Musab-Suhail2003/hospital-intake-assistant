@@ -327,8 +327,7 @@ On Railway these appear in the service's logs.
   than swapped. Two-digit years become the most recent year that isn't in the future.
   "Twenty five" as a year is rejected as ambiguous.
 - **Only English and Spanish.** Spanish covers the common forms, not every regional
-  variant, and tool messages are in English for the agent to translate. Urdu and Hindi are
-  left out for now: with language detection open, the first test call's English-spoken name
+  variant, and tool messages are in English for the agent to translate. Urdu is left out for now: with language detection open, the first test call's English-spoken name
   was transcribed in Urdu script, so the transcriber is locked to English and Spanish. A
   switch-on-request design is planned (Next Steps).
 - **A field can't be cleared by voice.** `update_patient` ignores blank values so that a
