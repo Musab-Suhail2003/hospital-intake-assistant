@@ -9,7 +9,7 @@ copy; this file records what it contains and why. The tool definitions are in
 | Setting | Value | Why |
 |---|---|---|
 | Model | OpenAI `gpt-4.1-mini` | Quick enough for spoken turns, and reliable at calling tools with structured arguments |
-| Transcriber | Soniox `stt-rt-v5`, languages `en`, `es` (strict) | With no language set, a caller's English name was transcribed in Urdu script. Spanish stays for Spanish-speaking callers. |
+| Transcriber | Soniox `stt-rt-v5`, languages `en`, `es` (strict) | With no language set, a caller's English name was transcribed in Urdu script. Spanish stays for Spanish-speaking callers. Urdu and Hindi were considered and left out (see the README's limitations). |
 | Voice | Vapi `Elliot` (version 2), language `auto` | Version 2 voices detect the conversation's language and speak it, so Spanish callers hear Spanish |
 | Tools | `end_patient_intake_call`, `save_patient`, `find_patient`, `update_patient`, `find_appointment_slots`, `book_appointment` | All but the end-call tool call this API |
 | Call reports | Server URL `/vapi/events` with `X-API-Key`; server messages: `end-of-call-report` only; call summary on | Stores each call's transcript and summary against the patient. Only the report is sent, so the API isn't flooded with live-call events. |

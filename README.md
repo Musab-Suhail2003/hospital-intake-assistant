@@ -326,8 +326,12 @@ On Railway these appear in the service's logs.
   day first. The agent is asked to send `YYYY-MM-DD`, and `15/03/1990` is rejected rather
   than swapped. Two-digit years become the most recent year that isn't in the future.
   "Twenty five" as a year is rejected as ambiguous.
-- **Spanish covers the common forms,** not every regional variant. Tool messages are in
-  English and the agent translates them as it speaks.
+- **Only English and Spanish.** Spanish covers the common forms, not every regional
+  variant, and tool messages are in English for the agent to translate. Urdu and Hindi were
+  considered and left out: with language detection open, the first test call's
+  English-spoken name was transcribed in Urdu script, the transcriber can't be limited to
+  switching only on whole sentences, and whether the voice speaks Urdu is unverified. The
+  transcriber is therefore locked to English and Spanish.
 - **A field can't be cleared by voice.** `update_patient` ignores blank values so that a
   model's empty placeholders never wipe data; clearing needs `PUT` with `null`.
 - **No migrations framework.** Tables are created on startup. Changes made after launch
@@ -349,8 +353,11 @@ On Railway these appear in the service's logs.
 3. **Real scheduling:** provider calendars, rescheduling, cancelling by voice, reminders.
 4. **Alembic migrations** in place of create-on-startup.
 5. **Pagination** on the list endpoints and the dashboard.
-6. **More languages** in the speech parsing, and localised tool messages instead of
-   relying on the agent to translate.
+6. **More languages, such as Urdu and Hindi:** open the transcriber to them, store names
+   and addresses in English letters (with a server check that rejects other scripts), switch
+   only when the caller speaks a full sentence in the language, and confirm with test calls
+   that English callers aren't affected. Localised tool messages instead of relying on the
+   agent to translate.
 7. **Database hardening:** a `statement_timeout`, a functional index for case-insensitive
    name search, and partial indexes that skip soft-deleted rows.
 8. **End-to-end voice tests:** scripted test calls through Vapi's API, checked against the
