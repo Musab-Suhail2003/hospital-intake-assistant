@@ -158,11 +158,11 @@ def render_dashboard(
 <style>{_STYLE}</style>
 </head>
 <body>
-<header>
+<header style="text-align: center;">
 <h1>Registered patients</h1>
-<p class="meta">{count} · refreshes every {REFRESH_SECONDS} seconds · <a href="/docs">API docs</a></p>
+<p class="meta"> {count} · <a href="/docs">API docs</a></p>
 </header>
-<form method="get" action="/dashboard">
+<form style="text-align: center;" method="get" action="/dashboard">
 {_filter_input("Last name", "last_name", filters, "Davis")}
 {_filter_input("Date of birth", "date_of_birth", filters, "MM/DD/YYYY")}
 {_filter_input("Phone", "phone_number", filters, "555 123 4567")}
