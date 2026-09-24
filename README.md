@@ -242,11 +242,21 @@ point `DATABASE_URL` at `host.docker.internal` and use `-p 8000:8000` instead).
 
 ### Run the tests
 
+The tests need Postgres, but not `.env` or an API key. With the `intake-db` container from
+the previous step running (start it with the `docker run` line above if not):
+
 ```bash
-docker exec intake-db createdb -U postgres intake_test
+docker exec intake-db createdb -U postgres intake_test   # a separate database, emptied by every test
+python3.11 -m venv .venv && source .venv/bin/activate    # if not already active
 pip install -r requirements-dev.txt
-pytest                                # uses postgresql://postgres:postgres@localhost:5432/intake_test
+pytest                                # all 114 tests, about 15 seconds
+pytest tests/test_tools.py            # one file
+pytest -k appointment                 # tests whose name matches
 ```
+
+By default the suite uses `postgresql://postgres:postgres@localhost:5432/intake_test`; set
+`TEST_DATABASE_URL` to use another database. It refuses to start unless the database name
+contains "test", so it can't empty a real one by mistake.
 
 The suite covers the speech parsing, the REST API, every tool endpoint, call reports,
 appointment booking and conflicts, the dashboard, and a database outage. GitHub Actions runs
