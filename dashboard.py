@@ -31,7 +31,8 @@ header, form, .notice, .table-wrap { max-width: 1400px; margin: 0 auto 16px; }
 h1 { font-size: 22px; margin: 0 0 4px; }
 .meta { color: var(--muted); margin: 0; }
 a { color: var(--accent); }
-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; }
+header { text-align: center; }
+form { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 12px; align-items: end; }
 label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
 input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
   background: transparent; color: var(--fg); min-width: 160px; }
@@ -158,11 +159,11 @@ def render_dashboard(
 <style>{_STYLE}</style>
 </head>
 <body>
-<header style="text-align: center;">
+<header>
 <h1>Registered patients</h1>
 <p class="meta"> {count} · <a href="/docs">API docs</a></p>
 </header>
-<form style="text-align: center;" method="get" action="/dashboard">
+<form method="get" action="/dashboard">
 {_filter_input("Last name", "last_name", filters, "Davis")}
 {_filter_input("Date of birth", "date_of_birth", filters, "MM/DD/YYYY")}
 {_filter_input("Phone", "phone_number", filters, "555 123 4567")}
