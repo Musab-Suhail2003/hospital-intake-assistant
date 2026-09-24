@@ -62,7 +62,7 @@ curl -X PUT "$BASE/patients/<patient_id>" -H "X-API-Key: $KEY" \
 | Multi-language | "Hablo español" switches the call to Spanish; the API also understands Spanish input ("cinco cinco cinco", "quince de marzo de mil novecientos noventa") |
 | Call transcripts | Transcript, summary and outcome of every call, linked to the patient: `GET /calls` and the dashboard |
 | Dashboard | `/dashboard`: patients, next appointments and recent calls; refreshes every 30 seconds |
-| Automated tests | 111 pytest tests against a real Postgres, run by GitHub Actions on every push |
+| Automated tests | 114 pytest tests against a real Postgres, run by GitHub Actions on every push |
 
 ---
 
@@ -136,10 +136,11 @@ re-asks for one thing at a time.
 | GET | `/patients/{patient_id}` | 404 if missing or soft-deleted |
 | POST | `/patients` | 201 with the new record. If the same person (phone, name and date of birth) is already registered: 200 with the existing record. Needs the key. |
 | PUT | `/patients/{patient_id}` | Partial update: only the fields sent change. Needs the key. |
-| DELETE | `/patients/{patient_id}` | Soft delete: sets `deleted_at`, never removes the row. Needs the key. |
+| DELETE | `/patients/{patient_id}` | Soft delete: sets `deleted_at`, never removes the row, and cancels the patient's upcoming appointments. Needs the key. |
 | GET | `/appointments/slots` | Free first-appointment times. Optional `?day=` and `?part_of_day=morning` or `afternoon` |
 | GET | `/appointments` | Booked appointments, soonest first. Optional `?patient_id=` |
 | POST | `/appointments` | Book `{patient_id, starts_at}`: 201; 409 if the time was just taken or the patient already has an upcoming appointment. Needs the key. |
+| DELETE | `/appointments/{appointment_id}` | Cancel: sets `cancelled_at`, keeps the row, and frees the time. Needs the key. |
 | GET | `/calls` | Recorded calls with transcript, summary and outcome, newest first. Optional `?patient_id=` |
 | GET | `/health` | 200 when the app can reach the database |
 | GET | `/dashboard` | HTML page: patients (filterable), next appointments, recent calls |
@@ -171,8 +172,10 @@ to 200 characters), because the agent asks why the caller is coming in.
 - `phone_number` and `last_name` are indexed, since both are lookup keys.
 - `phone_number` is deliberately not unique: family members share numbers.
 
-**`appointments`**: `appointment_id`, `patient_id`, `starts_at` (UTC). `starts_at` is
-unique, so the database itself refuses a double booking.
+**`appointments`**: `appointment_id`, `patient_id`, `starts_at` (UTC), `cancelled_at`.
+Cancelling keeps the row, like deleting a patient. A partial unique index on `starts_at`
+that ignores cancelled rows means the database itself refuses a double booking, while a
+cancelled time can be booked again.
 
 **`calls`**: keyed by Vapi's call ID, with `patient_id` (empty if nothing was saved),
 caller number, start and end times, how the call ended, summary and transcript. A call is
@@ -296,8 +299,9 @@ On Railway these appear in the service's logs.
 - **No identity check on updates or bookings.** A caller who gives a number on file can
   update that patient. A real system would verify something only the patient knows, such
   as the date of birth, on the server.
-- **Scheduling is mock data.** One provider, fixed hours, no cancelling or rescheduling,
-  and one upcoming appointment per patient.
+- **Scheduling is mock data.** One provider, fixed hours, one upcoming appointment per
+  patient. Bookings can be cancelled through the API but not by voice, and there's no
+  rescheduling.
 - **A call is linked to a patient only if something was saved during it.** A call that
   just looked someone up is stored without a patient.
 - **Duplicate means same phone, name and date of birth.** The same person with a misheard
@@ -316,9 +320,10 @@ On Railway these appear in the service's logs.
   English and the agent translates them as it speaks.
 - **A field can't be cleared by voice.** `update_patient` ignores blank values so that a
   model's empty placeholders never wipe data; clearing needs `PUT` with `null`.
-- **No migrations framework.** Tables are created on startup. The one column added after
-  launch, `reason_for_visit`, is added by an idempotent `ALTER TABLE … ADD COLUMN IF NOT
-  EXISTS` on startup. That covers adding nullable columns, not changing or removing them.
+- **No migrations framework.** Tables are created on startup. Changes made after launch
+  (the `reason_for_visit` column, and the appointments' `cancelled_at` column and partial
+  unique index) are applied by idempotent statements on startup, and a test replays them
+  against the original table. That suits additive changes, not renames or removals.
 - **Tool endpoints bend the envelope rule,** as described under [API](#api), because Vapi
   dictates the reply format.
 - **Patient details and transcripts appear in logs** (the brief asks for conversations to
@@ -331,7 +336,7 @@ On Railway these appear in the service's logs.
 1. **Authentication on reads, transcripts and the dashboard,** and masking patient details
    in logs.
 2. **Server-side identity check** before `update_patient` or `book_appointment` act.
-3. **Real scheduling:** provider calendars, cancelling and rescheduling, reminders.
+3. **Real scheduling:** provider calendars, rescheduling, cancelling by voice, reminders.
 4. **Alembic migrations** in place of create-on-startup.
 5. **Pagination** on the list endpoints and the dashboard.
 6. **More languages** in the speech parsing, and localised tool messages instead of
