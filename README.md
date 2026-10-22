@@ -62,7 +62,7 @@ curl -X PUT "$BASE/patients/<patient_id>" -H "X-API-Key: $KEY" \
 | Multi-language | "Hablo español" switches the call to Spanish; the API also understands Spanish input ("cinco cinco cinco", "quince de marzo de mil novecientos noventa") |
 | Call transcripts | Transcript, summary and outcome of every call, linked to the patient: `GET /calls` and the dashboard |
 | Dashboard | `/dashboard`: patients, next appointments and recent calls; refreshes every 30 seconds |
-| Automated tests | 114 pytest tests against a real Postgres, run by GitHub Actions on every push |
+| Automated tests | 115 pytest tests against a real Postgres, run by GitHub Actions on every push |
 
 ---
 
@@ -249,7 +249,7 @@ the previous step running (start it with the `docker run` line above if not):
 docker exec intake-db createdb -U postgres intake_test   # a separate database, emptied by every test
 python3.11 -m venv .venv && source .venv/bin/activate    # if not already active
 pip install -r requirements-dev.txt
-pytest                                # all 114 tests, about 15 seconds
+pytest                                # all 115 tests, about 15 seconds
 pytest tests/test_tools.py            # one file
 pytest -k appointment                 # tests whose name matches
 ```

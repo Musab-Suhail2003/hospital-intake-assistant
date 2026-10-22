@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -181,6 +181,12 @@ def get_active_patient(db: Session, patient_id: UUID) -> Patient:
     if patient is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Patient not found")
     return patient
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """The bare URL opens the dashboard, the page a visitor most likely wants."""
+    return RedirectResponse("/dashboard")
 
 
 @app.get("/health", response_model=Envelope[dict])

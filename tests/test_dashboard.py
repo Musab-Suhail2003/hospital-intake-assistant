@@ -39,3 +39,9 @@ def test_database_down_shows_a_message(client, database_down):
     page = client.get("/dashboard")
     assert page.status_code == 500
     assert "reach the patient records system" in page.text
+
+
+def test_root_redirects_to_the_dashboard(client):
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/dashboard"
