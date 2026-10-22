@@ -11,13 +11,13 @@ def _database_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is not set")
-    # Railway emits postgres://, which SQLAlchemy 2.x no longer accepts.
+    # Some hosts emit postgres://, which SQLAlchemy 2.x no longer accepts.
     if url.startswith("postgres://"):
         url = "postgresql://" + url.removeprefix("postgres://")
     return url
 
 
-# pool_pre_ping replaces connections Railway has dropped instead of failing the request;
+# pool_pre_ping replaces connections the host has dropped instead of failing the request;
 # connect_timeout makes an unreachable database fail fast rather than hang the voice call.
 engine = create_engine(
     _database_url(), pool_pre_ping=True, connect_args={"connect_timeout": 5}

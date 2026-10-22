@@ -10,15 +10,15 @@ transcript and summary are stored against the patient. The agent also works in S
 | | |
 |---|---|
 | **Phone number** | **+1 (216) 755-7602** |
-| **API base URL** | https://hospital-intake-assistant-production.up.railway.app |
-| Dashboard | https://hospital-intake-assistant-production.up.railway.app/dashboard |
-| Interactive API docs | https://hospital-intake-assistant-production.up.railway.app/docs |
+| **API base URL** | https://hospital-intake-assistant.onrender.com |
+| Dashboard | https://hospital-intake-assistant.onrender.com/dashboard |
+| Interactive API docs | https://hospital-intake-assistant.onrender.com/docs |
 
 Reads (`GET`) are open. Writes need an `X-API-Key` header; the key is provided separately
 with the submission, not in this repository.
 
 ```bash
-BASE=https://hospital-intake-assistant-production.up.railway.app
+BASE=https://hospital-intake-assistant.onrender.com
 curl "$BASE/patients"                              # everyone registered
 curl "$BASE/patients?last_name=doe"                # filter: last_name, date_of_birth, phone_number
 curl "$BASE/patients/<patient_id>"                 # one patient
@@ -73,14 +73,14 @@ curl -X PUT "$BASE/patients/<patient_id>" -H "X-API-Key: $KEY" \
                         │
                         │  tool calls and end-of-call reports, over HTTPS with X-API-Key
                         ▼
-                    FastAPI app on Railway (Docker)
+                    FastAPI app on Render (Docker)
                       /tools/find_patient  /tools/save_patient  /tools/update_patient
                       /tools/find_appointment_slots  /tools/book_appointment  /vapi/events
                       /patients  /appointments  /calls  (REST)   /dashboard   /health
                         │
                         │  SQLAlchemy
                         ▼
-                    PostgreSQL on Railway: patients, appointments, calls
+                    PostgreSQL on Neon: patients, appointments, calls
 ```
 
 **Separation of concerns.** Vapi owns the phone line, speech and the conversation loop. The
@@ -112,7 +112,7 @@ identical rules.
 | **Pydantic v2** | One place for every rule: types, formats and the speech parsing all live in the models |
 | **SQLAlchemy 2** | Typed models and composable queries; one base query excludes soft-deleted rows everywhere |
 | **PostgreSQL** | Real `DATE`, `UUID` and timezone-aware timestamp types, plus constraints the database enforces itself (including "one booking per slot") |
-| **Railway** | Always-on service (no sleeping free tier, so a reviewer's call never waits for a cold start), managed Postgres in the same project with `DATABASE_URL` injected, and it deploys the repo's Dockerfile |
+| **Render + Neon** | Render runs the repo's Dockerfile as-is on its free tier, kept awake by a scheduled ping (see limitations). Neon is serverless Postgres with a free tier and a plain connection string. First deployed on Railway; moved when its trial ended. |
 | **Docker** | The image tested locally is the one that runs in production |
 | **pytest, GitHub Actions** | Tests run against a real Postgres, not a stand-in, so constraints and queries are tested as they run in production |
 
@@ -211,13 +211,13 @@ the brief says never to trust the agent's validation. English and Spanish both w
 
 | Variable | Needed by | Purpose |
 |---|---|---|
-| `DATABASE_URL` | App | Postgres connection string. Railway injects it; its `postgres://` prefix is handled. |
+| `DATABASE_URL` | App | Postgres connection string (Neon's, in production). A `postgres://` prefix is handled. |
 | `API_KEY` | App | Shared secret for writes, sent as `X-API-Key`. Without it, every write is refused. |
 | `PORT` | App | Port to listen on; defaults to 8000 |
 | `PRACTICE_TIMEZONE` | App | Timezone for appointment slots; defaults to `America/New_York` |
 | `API_BASE_URL` | `seed.py` | Where to seed; defaults to `http://localhost:8000` |
 | `TEST_DATABASE_URL` | Tests | A throwaway database, emptied before every test. Its name must contain "test". |
-| `VAPI_API_KEY`, `RAILWAY_TOKEN` | Nobody at runtime | Only for configuring Vapi and deploying from the command line |
+| `VAPI_API_KEY`, `RENDER_API_KEY` | Nobody at runtime | Only for configuring Vapi and the host from the command line |
 
 ### Run locally
 
@@ -264,12 +264,13 @@ it on every push.
 
 ### Deploy
 
-1. Create a Railway project from this repository, and add the Postgres add-on (it injects
-   `DATABASE_URL`).
-2. Set `API_KEY` on the service. Railway builds the Dockerfile.
-3. Tables are created on first start. Columns added later are added on startup too (see
-   limitations).
-4. Optionally seed: `API_BASE_URL=https://<your-app> python seed.py`.
+1. Create a Postgres database (Neon here) and copy its connection string.
+2. On Render: **New → Web Service** from this repository, runtime Docker, health check
+   path `/health`, with `DATABASE_URL` and `API_KEY` set. Render builds the Dockerfile.
+3. Tables are created on first start; later schema changes are applied on startup too.
+4. On the free tier, keep it awake: `.github/workflows/keep-awake.yml` pings `/health`
+   every 10 minutes (change the URL to yours).
+5. Optionally seed: `API_BASE_URL=https://<your-app> python seed.py`.
 
 ### Connect the voice agent
 
@@ -297,7 +298,7 @@ it on every push.
   shows where callers get stuck.
 - Database errors log a full traceback. Callers and clients only ever see a plain message.
 
-On Railway these appear in the service's logs.
+On Render these appear in the service's logs.
 
 ---
 
@@ -338,6 +339,10 @@ On Railway these appear in the service's logs.
   against the original table. That suits additive changes, not renames or removals.
 - **Tool endpoints bend the envelope rule,** as described under [API](#api), because Vapi
   dictates the reply format.
+- **Free hosting sleeps.** Render's free tier sleeps after 15 idle minutes and takes up to
+  a minute to wake, longer than Vapi waits for a tool call. A scheduled GitHub Action pings
+  `/health` every 10 minutes to prevent that; if GitHub delays a run, the first request
+  after a gap can be slow. A paid instance removes the issue.
 - **Patient details and transcripts appear in logs** (the brief asks for conversations to
   be logged). Real use would need masking or restricted log access.
 

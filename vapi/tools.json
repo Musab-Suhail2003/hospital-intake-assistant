@@ -106,7 +106,7 @@
       }
     },
     "server": {
-      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/save_patient",
+      "url": "https://hospital-intake-assistant.onrender.com/tools/save_patient",
       "headers": {
         "X-API-Key": "<API_KEY>"
       }
@@ -131,7 +131,7 @@
       }
     },
     "server": {
-      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/find_patient",
+      "url": "https://hospital-intake-assistant.onrender.com/tools/find_patient",
       "headers": {
         "X-API-Key": "<API_KEY>"
       }
@@ -229,7 +229,7 @@
       }
     },
     "server": {
-      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/update_patient",
+      "url": "https://hospital-intake-assistant.onrender.com/tools/update_patient",
       "headers": {
         "X-API-Key": "<API_KEY>"
       }
@@ -259,7 +259,7 @@
       }
     },
     "server": {
-      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/find_appointment_slots",
+      "url": "https://hospital-intake-assistant.onrender.com/tools/find_appointment_slots",
       "headers": {
         "X-API-Key": "<API_KEY>"
       }
@@ -289,7 +289,7 @@
       }
     },
     "server": {
-      "url": "https://hospital-intake-assistant-production.up.railway.app/tools/book_appointment",
+      "url": "https://hospital-intake-assistant.onrender.com/tools/book_appointment",
       "headers": {
         "X-API-Key": "<API_KEY>"
       }

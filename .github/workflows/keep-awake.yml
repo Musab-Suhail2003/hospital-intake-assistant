@@ -1,0 +1,14 @@
+name: keep-awake
+
+# Render's free tier sleeps after 15 idle minutes and takes up to a minute to wake, longer
+# than Vapi waits for a tool call. Pinging /health every 10 minutes keeps it awake.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl --fail --silent --show-error --max-time 90 https://hospital-intake-assistant.onrender.com/health

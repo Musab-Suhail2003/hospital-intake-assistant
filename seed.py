@@ -2,7 +2,7 @@
 
 Usage:
     python seed.py                                          # local server, http://localhost:8000
-    API_BASE_URL=https://your-app.up.railway.app python seed.py
+    API_BASE_URL=https://your-app.onrender.com python seed.py
 
 Reads API_KEY from the environment or .env. Seeding goes through POST /patients, so the demo
 records pass the same validation as real ones. Safe to re-run: the API returns the existing
