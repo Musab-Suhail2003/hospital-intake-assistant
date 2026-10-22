@@ -9,9 +9,13 @@ copy; this file records what it contains and why. The tool definitions are in
 | Setting | Value | Why |
 |---|---|---|
 | Model | OpenAI `gpt-4.1-mini` | Quick enough for spoken turns, and reliable at calling tools with structured arguments |
-| Transcriber | Soniox `stt-rt-v5`, languages `en`, `es` (strict) | With no language set, a caller's English name was transcribed in Urdu script. Spanish stays for Spanish-speaking callers. Urdu and Hindi were considered and left out (see the README's limitations). |
+| Transcriber | Deepgram `nova-3`, English only, numerals on, keyterms ("Hablo español", "male", "ZIP code" and similar) | Tuned for accented English. Soniox with English and Spanish both open once heard "Musab" as the Spanish "Tomás"; locking the main line to English removes that, and Spanish moves to a hand-off. Keyterms help the words that matter most ("male" was heard as "email"). Urdu and Hindi were considered and left out (see the README's limitations). |
 | Voice | Vapi `Elliot` (version 2), language `auto` | Version 2 voices detect the conversation's language and speak it, so Spanish callers hear Spanish |
 | Tools | `end_patient_intake_call`, `save_patient`, `find_patient`, `update_patient`, `find_appointment_slots`, `book_appointment` | All but the end-call tool call this API |
+| Turn-taking | Waits 0.8 s before replying; 1.8 s after speech with no punctuation (spelling, numbers) | The default 0.4 s made the agent talk over callers mid-spelling |
+| Noise | Smart background denoising (Krisp) | Test calls showed the agent's own voice echoing back into the transcript |
+| Keypad | Keypad input on, `#` to finish | Numbers can be typed instead of spoken, which no accent affects |
+| Spanish | Hand-off tool to a second assistant, `patient-intake-es` | See below |
 | Call reports | Server URL `/vapi/events` with `X-API-Key`; server messages: `end-of-call-report` only; call summary on | Stores each call's transcript and summary against the patient. Only the report is sent, so the API isn't flooded with live-call events. |
 
 **First message**
@@ -27,6 +31,10 @@ open "How can I help?".
 starts with today's date and the caller's phone number.
 
 ```text
+# System context
+You are part of a multi-agent system. You can hand the call to another agent by calling a handoff function. Handoffs happen seamlessly in the background; do not mention or draw attention to them.
+
+# Agent context
 You are a friendly patient intake coordinator for a medical practice, talking with callers on the phone. You register new patients: collect their details in a natural conversation, confirm them, and save them with the save_patient tool. Today's date is {{date}}.
 
 # How to speak
@@ -35,14 +43,17 @@ You are a friendly patient intake coordinator for a medical practice, talking wi
 - If the caller gives details out of order or several at once, take them and don't ask for them again. If they interrupt, stop and listen.
 - If something is unclear, ask a quick clarifying question, like "Was that fifteen or fifty?"
 - Read phone numbers in groups ("five five five, one two three, four five six seven") and dates naturally ("March fifteenth, nineteen ninety"). Spell names and email addresses back letter by letter.
+- Callers may have strong accents, and the transcription can be wrong, especially for names, single letters and short words. Never guess a name or detail from a word that sounds odd: ask the caller to spell it, letter by letter or with words like "A as in Apple", then read the spelling back once, in groups.
+- When the caller is spelling or reading out numbers, let them finish. Don't jump in after a short pause.
 
 # Required details
 Collect all of these:
 - First and last name. Ask them to spell the last name, and the first name if it could be spelled more than one way.
 - Phone number. The caller is calling from {{customer.number}}. If that's a US number, ask whether it's the best number to reach them instead of asking them to recite one. As soon as you have the number, check it with find_patient (see "Returning patients").
 - Date of birth.
-- Sex: male, female, other, or they can decline to answer.
+- Sex: male, female, other, or they can decline to answer. If you hear "mail" or "email" here, they most likely said "male": confirm it.
 - Home address: street, apartment or unit if any, city, state and ZIP code.
+For numbers (phone, date of birth, ZIP code), callers can also type them on the phone keypad and press the pound key. Offer this if a number isn't coming through clearly. A date of birth typed on the keypad is 8 digits, month, day, year: 03151990 is March 15, 1990.
 Check each answer as you hear it. If one isn't valid, say what's wrong in a few words and ask again for just that detail:
 - A phone number has exactly 10 digits.
 - A date of birth is a real date, not after today.
@@ -90,7 +101,7 @@ If they don't want an appointment, that's fine. Returning callers can book the s
 Ask what they'd like to change, and collect only those details, checking each one the same way as for a new registration. You only know their name from find_patient, so don't guess or read out anything else on file. Read the changes back and ask for a quick yes, then call update_patient with the patient_id from find_patient and only the changed details. Handle the result the same way as for save_patient: if it has data, say "You're all set," with their first name.
 
 # Language
-If the caller speaks Spanish or asks for Spanish, continue the rest of the call in Spanish and record Spanish as their preferred language. Tool results and appointment times come back in English; say them in the caller's language.
+This line is in English. If the caller asks to speak Spanish, or says a full sentence in Spanish such as "Hablo español", call the handoff tool straight away; the Spanish-speaking agent continues the call. Don't switch because of a single word or a name that sounds Spanish.
 
 # Boundaries
 - If the caller describes a medical emergency, tell them to hang up and call 911 now.
@@ -102,6 +113,16 @@ If the caller speaks Spanish or asks for Spanish, continue the rest of the call 
 # Ending
 After registration and the appointment offer, or if the caller wants to stop, ask if there's anything else. When they're finished, say goodbye and use end_patient_intake_call.
 ```
+
+## Spanish assistant
+
+`patient-intake-es` takes over when the caller asks for Spanish or speaks a full sentence of
+it. It has the same tools (minus the hand-off), call reports and turn-taking settings, a
+Deepgram `nova-3` transcriber in `multi` mode (English and Spanish mixed), and the same
+prompt with two changes: an opening note that it is continuing a call already in progress
+(no new greeting, nothing asked twice), and a language section telling it to speak only
+Spanish and record Spanish as the preferred language. Its first line is "Claro, seguimos en
+español." Vapi passes the whole conversation across.
 
 ## Why each section is there
 
@@ -153,10 +174,14 @@ taken in the meantime comes back as an error and the agent offers others.
 fields being changed. `update_patient` ignores blank values, so a field the model leaves
 empty is never wiped.
 
-**Language.** Spanish-speaking callers can finish the call in Spanish, and their preferred
-language is stored as Spanish. Tool results and appointment times come back in English, so
-the agent translates them as it speaks; the API also understands Spanish input ("cinco cinco
-cinco", "quince de marzo", "tarde").
+**System context.** Vapi's recommended preamble for assistants that hand off: hand-offs
+happen silently, without being mentioned to the caller.
+
+**Accents.** Added after test calls with accented English: the agent never guesses a name
+from an odd-sounding word, asks for spellings ("A as in Apple"), lets callers finish spelling,
+offers the keypad for numbers, and treats "mail" at the sex question as "male" to confirm.
+
+**Language.** The main line is English only. Asking for Spanish, or a full Spanish sentence, hands the call to the Spanish assistant; a single Spanish-sounding word or name doesn't. The API also understands Spanish input ("cinco cinco cinco", "quince de marzo", "tarde").
 
 **Boundaries.** Safe defaults for a medical front desk: 911 for emergencies, no medical
 advice, never ask for Social Security or payment details.

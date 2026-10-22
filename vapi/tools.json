@@ -294,5 +294,18 @@
         "X-API-Key": "<API_KEY>"
       }
     }
+  },
+  {
+    "type": "handoff",
+    "destinations": [
+      {
+        "type": "assistant",
+        "assistantId": "<ID of the patient-intake-es assistant>",
+        "contextEngineeringPlan": {
+          "type": "all"
+        },
+        "description": "The caller wants to speak Spanish: they asked for Spanish, or spoke a full sentence in Spanish such as \"Hablo español\"."
+      }
+    ]
   }
 ]

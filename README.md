@@ -59,7 +59,7 @@ curl -X PUT "$BASE/patients/<patient_id>" -H "X-API-Key: $KEY" \
 |---|---|
 | Duplicate detection | Returning callers are recognised by phone number and offered an update; saving the same person twice returns the existing record |
 | Appointment scheduling | First-appointment booking against mock availability (below) |
-| Multi-language | "Hablo español" switches the call to Spanish; the API also understands Spanish input ("cinco cinco cinco", "quince de marzo de mil novecientos noventa") |
+| Multi-language | "Hablo español" hands the call to a Spanish-speaking assistant; the API also understands Spanish input ("cinco cinco cinco", "quince de marzo de mil novecientos noventa") |
 | Call transcripts | Transcript, summary and outcome of every call, linked to the patient: `GET /calls` and the dashboard |
 | Dashboard | `/dashboard`: patients, next appointments and recent calls; refreshes every 30 seconds |
 | Automated tests | 115 pytest tests against a real Postgres, run by GitHub Actions on every push |
@@ -69,7 +69,7 @@ curl -X PUT "$BASE/patients/<patient_id>" -H "X-API-Key: $KEY" \
 ## Architecture
 
 ```
- Caller ──phone──▶  Vapi: telephony, speech-to-text (Soniox), LLM (gpt-4.1-mini), text-to-speech
+ Caller ──phone──▶  Vapi: telephony, speech-to-text (Deepgram), LLM (gpt-4.1-mini), text-to-speech
                         │
                         │  tool calls and end-of-call reports, over HTTPS with X-API-Key
                         ▼
